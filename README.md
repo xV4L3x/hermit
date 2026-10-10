@@ -16,6 +16,7 @@ file round-trips byte for byte.
 
 - [Features](#features)
 - [Supported HBC versions](#supported-hbc-versions)
+- [Prebuilt binaries](#prebuilt-binaries)
 - [Build](#build)
 - [Getting an `.hbc` file](#getting-an-hbc-file)
 - [Using the REPL](#using-the-repl)
@@ -50,6 +51,29 @@ file round-trips byte for byte.
 
 Apps built with Hermes V1 (the default from RN 0.84) emit HBC 98, which is not
 supported yet. Format notes are in [`doc/hbc-format/`](doc/hbc-format/).
+
+## Prebuilt binaries
+
+Each [release](https://github.com/xV4L3x/hermit/releases) has archives for
+macOS and Linux, on arm64 and x86_64. No Python or compiler is needed:
+
+| Archive | Content |
+|---|---|
+| `hermit-<version>-<platform>.tar.gz` | The interactive REPL: `./hermit file.hbc`. |
+| `hermit-tools-<version>-<platform>.tar.gz` | The standalone `hbc_*` command-line tools. |
+| `SHA256SUMS` | Checksums: `shasum -a 256 -c SHA256SUMS`. |
+
+```bash
+tar -xzf hermit-0.1.0-macos-arm64.tar.gz
+./hermit-0.1.0-macos-arm64/hermit --version
+```
+
+The macOS binaries are not signed. After downloading, clear the quarantine flag
+once: `xattr -dr com.apple.quarantine hermit-0.1.0-macos-arm64`. The Linux builds
+need glibc 2.35 or newer. The `cfg` command still needs `graph-easy` installed.
+
+Releases are produced by `.github/workflows/release.yml` when a `v*` tag is
+pushed, using `packaging/build-release.sh`, which you can also run locally.
 
 ## Build
 
@@ -329,6 +353,7 @@ available are skipped.
 | `bindings/` | pybind11 module `_libhbc`. |
 | `cli/` | Python REPL (`repl.py`), project state (`project.py`), output formatting, and the editors in `editor/`. |
 | `tools/` | Standalone C++ command-line tools and helper scripts. |
+| `packaging/` | Release build: PyInstaller entry point and `build-release.sh`. |
 | `seeder/` | Corpus generation: samples compiled with the Hermes compiler. |
 | `tests/` | Catch2 unit tests (`unit/`) and pytest integration tests (`integration/`). |
 | `doc/` | HBC format notes. |

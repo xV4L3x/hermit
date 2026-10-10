@@ -1,0 +1,116 @@
+name: Release
+
+# Pushing a tag like v0.1.0 builds hermit on every platform and publishes a
+# GitHub Release with the archives. "Run workflow" from the Actions tab does the
+# same builds without publishing, to try the pipeline.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build ${{ matrix.platform }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { platform: macos-arm64,  runner: macos-14 }
+          - { platform: macos-x86_64, runner: macos-15-intel }
+          - { platform: linux-x86_64, runner: ubuntu-22.04 }
+          - { platform: linux-arm64,  runner: ubuntu-22.04-arm }
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Work out the version
+        id: version
+        shell: bash
+        run: |
+          if [[ "$GITHUB_REF_TYPE" == "tag" ]]; then
+            version="${GITHUB_REF_NAME#v}"
+            declared="$(python -c 'import runpy; print(runpy.run_path("cli/_version.py")["__version__"])')"
+            cmake_version="$(sed -n 's/^project(hermit VERSION \([0-9.]*\).*/\1/p' CMakeLists.txt)"
+            if [[ "$declared" != "$version" || "$cmake_version" != "$version" ]]; then
+              echo "::error::tag v$version does not match cli/_version.py ($declared) and CMakeLists.txt ($cmake_version)"
+              exit 1
+            fi
+          else
+            version="dev-${GITHUB_SHA::7}"
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt "pyinstaller>=6,<7"
+
+      - name: Build
+        run: packaging/build-release.sh "${{ steps.version.outputs.version }}" "${{ matrix.platform }}"
+
+      - name: Smoke test
+        shell: bash
+        run: |
+          set -o pipefail
+          app="dist/hermit-${{ steps.version.outputs.version }}-${{ matrix.platform }}"
+          tools="dist/hermit-tools-${{ steps.version.outputs.version }}-${{ matrix.platform }}"
+          # Test the archives, not the build tree.
+          mkdir smoke && tar -xzf "$app.tar.gz" -C smoke && tar -xzf "$tools.tar.gz" -C smoke
+          smoke/hermit-*-${{ matrix.platform }}/hermit --version
+          printf 'info\nexit\n' | smoke/hermit-*-${{ matrix.platform }}/hermit tests/fixtures/hello.hbc | tee repl.out
+          grep -q "HBC v96" repl.out
+          smoke/hermit-tools-*/hbc_dump tests/fixtures/hello.hbc | grep -q "Version:.*96"
+          smoke/hermit-tools-*/hbc_roundtrip tests/fixtures/hello.hbc smoke/out.hbc
+          cmp tests/fixtures/hello.hbc smoke/out.hbc
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: hermit-${{ matrix.platform }}
+          path: |
+            dist/*.tar.gz
+            dist/*.sha256
+          if-no-files-found: error
+
+  publish:
+    name: Publish release
+    if: github.ref_type == 'tag'
+    needs: build
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: assets
+          pattern: hermit-*
+          merge-multiple: true
+
+      - name: Checksums
+        run: cd assets && cat *.sha256 > SHA256SUMS && rm *.sha256 && cat SHA256SUMS
+
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cat > notes.md <<'NOTES'
+          Prebuilt `hermit` for macOS and Linux (arm64 and x86_64).
+
+          - `hermit-<version>-<platform>.tar.gz`: the interactive REPL. Unpack it and run `./hermit file.hbc`.
+          - `hermit-tools-<version>-<platform>.tar.gz`: the standalone `hbc_*` command-line tools.
+          - `SHA256SUMS`: checksums of every archive (`shasum -a 256 -c SHA256SUMS`).
+
+          On macOS the binaries are not signed: after downloading, run
+          `xattr -dr com.apple.quarantine <unpacked folder>` before the first launch.
+          The Linux builds need glibc 2.35 or newer.
+          NOTES
+          gh release create "$GITHUB_REF_NAME" assets/* \
+            --repo "$GITHUB_REPOSITORY" --title "hermit ${GITHUB_REF_NAME#v}" \
+            --notes-file notes.md --generate-notes --verify-tag

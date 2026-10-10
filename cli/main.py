@@ -1,13 +1,21 @@
-"""hermit CLI - python -m cli.main [file.hbc]"""
+"""hermit CLI: python -m cli.main [--version] [file.hbc]"""
 
-import sys
+import argparse
 
-from cli.repl import HermitREPL
+from cli._version import __version__
 
 
 def main() -> None:
-    initial_file = sys.argv[1] if len(sys.argv) > 1 else None
-    HermitREPL().run(initial_file)
+    parser = argparse.ArgumentParser(
+        prog="hermit",
+        description="Hermes Reverse Engineering & Manipulation Interactive Toolkit.",
+    )
+    parser.add_argument("file", nargs="?", help="HBC file to open (.hbc)")
+    parser.add_argument("--version", action="version", version=f"hermit {__version__}")
+    args = parser.parse_args()
+
+    from cli.repl import HermitREPL  # imported late: --version/--help don't need the C++ module
+    HermitREPL().run(args.file)
 
 
 if __name__ == "__main__":
