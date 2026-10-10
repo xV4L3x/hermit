@@ -1,0 +1,17 @@
+build/
+.venv/
+.cache/
+.pytest_cache/
+__pycache__/
+*.pyc
+*.egg-info/
+dist/
+.DS_Store
+
+# Generated corpus (rebuild with seeder/)
+seeder/corpus/*.hbc
+seeder/corpus/disassembled/*
+seeder/real-apps/
+
+# hermes-decomp cache
+*.hdcache

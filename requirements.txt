@@ -1,0 +1,14 @@
+# The `cfg` REPL command also needs graph-easy, a Perl/CPAN tool (not a pip
+# package - can't be listed below). Install with: cpanm Graph::Easy
+
+click==8.4.1
+iniconfig==2.3.0
+markdown-it-py==4.2.0
+mdurl==0.1.2
+packaging==26.2
+pluggy==1.6.0
+prompt_toolkit==3.0.52
+Pygments==2.20.0
+pytest==9.1.1
+rich==15.0.0
+wcwidth==0.8.1
