@@ -23,4 +23,8 @@ target_include_directories(hbc
     PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src
 )
 
+# libhbc is linked into the Python module (a shared object), so it must be
+# position-independent. Not needed on macOS, required on Linux.
+set_target_properties(hbc PROPERTIES POSITION_INDEPENDENT_CODE ON)
+
 target_compile_options(hbc PRIVATE -Wall -Wextra -Wpedantic)
