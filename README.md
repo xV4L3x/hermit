@@ -1,4 +1,4 @@
-# hermit
+# Hermit
 
 **Hermes Reverse Engineering & Manipulation Interactive Toolkit.**
 
