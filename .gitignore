@@ -10,6 +10,8 @@ dist/
 
 # Generated corpus (rebuild with seeder/)
 seeder/corpus/*.hbc
+seeder/corpus/*.hbc.*
+seeder/corpus/manifest.json
 seeder/corpus/disassembled/*
 seeder/real-apps/
 

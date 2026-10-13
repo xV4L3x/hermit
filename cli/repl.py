@@ -285,10 +285,22 @@ class HermitREPL:
         except Exception:
             pass
 
-        rows  = display.functions_to_ansi_rows(funcs, global_idx, module_ids)
+        # header.cjsModuleCount > 0 only for a file compiled with Hermes's
+        # native `-commonjs` mode -- never both this and recover_modules()
+        # (Metro) on the same file in practice, see doc/hbc-format/v96-format.md §9.
+        cjs_module_paths: dict[int, str] = {}
+        try:
+            for cm in proj.hbc.cjs_modules():
+                cjs_module_paths[cm.function_index] = cm.module_path
+        except Exception:
+            pass
+
+        rows  = display.functions_to_ansi_rows(funcs, global_idx, module_ids, cjs_module_paths)
         title = f"functions ({len(rows)})"
         if module_ids:
             title += f"  {len(module_ids)} modules"
+        if cjs_module_paths:
+            title += f"  {len(cjs_module_paths)} CJS modules"
         title += "  * = global entry"
         self._show_rows(rows, title)
 

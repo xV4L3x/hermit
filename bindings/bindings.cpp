@@ -266,6 +266,7 @@ PYBIND11_MODULE(_libhbc, m) {
         .def("string_xrefs",       &hbc::HBCFile::string_xrefs)
         .def("call_graph",         &hbc::HBCFile::call_graph)
         .def("recover_modules",    &hbc::HBCFile::recover_modules)
+        .def("cjs_modules",        &hbc::HBCFile::cjs_modules)
         .def("source_files", [](const hbc::HBCFile& self) { return decodeUtf8List(self.source_files()); })
         .def("source_locations", &hbc::HBCFile::source_locations)
         .def("decompile",        &hbc::HBCFile::decompile)
@@ -378,6 +379,17 @@ PYBIND11_MODULE(_libhbc, m) {
     py::class_<hbc::ModuleInfo>(m, "ModuleInfo")
         .def_readonly("function_index", &hbc::ModuleInfo::functionIndex)
         .def_readonly("module_id",      &hbc::ModuleInfo::moduleId)
+    ;
+
+    // CJS Module Table (native `hermes -commonjs` mode, never present in a
+    // Metro-bundled bundle -- see ModuleInfo/recover_modules() for that case).
+    py::class_<hbc::CJSModuleInfo>(m, "CJSModuleInfo")
+        .def_readonly("function_index",         &hbc::CJSModuleInfo::functionIndex)
+        .def_readonly("is_statically_resolved",  &hbc::CJSModuleInfo::isStaticallyResolved)
+        .def_readonly("module_id",               &hbc::CJSModuleInfo::moduleId)
+        .def_property_readonly("module_path", [](const hbc::CJSModuleInfo& cm) {
+            return decodeUtf8(cm.modulePath);
+        })
     ;
 
     // Source location data

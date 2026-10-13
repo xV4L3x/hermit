@@ -50,18 +50,17 @@ def main():
         "// core/src/format/opcodes_v96.cpp. NON modificare a mano.",
         f"// {len(rows)} opcode definiti su 256.",
         "#pagebreak(weak: true)",
-        "#set text(size: 6.5pt)",
-        "#columns(2, gutter: 0.8em)[",
+        "#set text(size: 9.5pt)",
         "#table(",
         "  columns: (auto, auto, 1fr, auto),",
         "  align: (center, left, left, center),",
-        "  inset: (x: 2pt, y: 1.5pt),",
+        "  inset: (x: 4pt, y: 2.5pt),",
         "  table.header(repeat: true, [*Op*], [*Mnemonic*], [*Operandi*], [*B*]),",
     ]
     for op, name, cols, size in rows:
         ops = ", ".join(cols) if cols else "—"
         lines.append(f"  [`{op}`], [`{name}`], [`{ops}`], [{size}],")
-    lines += [")", "]"]
+    lines += [")"]
     out.write_text("\n".join(lines) + "\n")
     print(f"{len(rows)} opcode -> {out}")
 

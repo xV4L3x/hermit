@@ -20,6 +20,7 @@ add_executable(hermit_tests
     unit/disassembler/test_disassembler.cpp
     unit/cfg/test_cfg.cpp
     unit/xrefs/test_xrefs.cpp
+    unit/cjs-modules/test_cjs_modules.cpp
     unit/decompiler/test_decompiler.cpp
     unit/patcher/test_encoder.cpp
     unit/patcher/test_module.cpp

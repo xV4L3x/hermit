@@ -147,11 +147,27 @@ def make_info_table(hbc: _libhbc.HBCFile) -> Table:
     table.add_row("Global function",  f"[{global_idx}] {funcs[global_idx].name}")
     table.add_row("Debug info offset", f"{hdr.debug_info_offset:#010x}")
 
+    # header.cjsModuleCount > 0 only for a file compiled with Hermes's native
+    # `-commonjs` mode -- never both this and Metro's `__d()` pattern on the
+    # same file in practice, see doc/hbc-format/v96-format.md §9.
+    try:
+        cjs_mods = hbc.cjs_modules()
+    except Exception:
+        cjs_mods = []
+    if cjs_mods:
+        table.add_row("CJS modules", str(len(cjs_mods)))
+    else:
+        try:
+            metro_mods = hbc.recover_modules()
+        except Exception:
+            metro_mods = []
+        table.add_row("Metro modules", str(len(metro_mods)))
+
     src_files = hbc.source_files()
     if src_files:
-        table.add_row("Source file(s)", _short_path(src_files[0]))
+        table.add_row("Source file(s)", src_files[0])
         for sf in src_files[1:]:
-            table.add_row("", _short_path(sf))
+            table.add_row("", sf)
 
     table.add_row("Source hash",      hbc.header().source_hash.hex())
 
@@ -219,8 +235,18 @@ def functions_to_ansi_rows(
     funcs: list,
     global_idx: int,
     module_ids: Optional[dict] = None,
+    cjs_module_paths: Optional[dict] = None,
 ) -> list[str]:
-    """Format functions as ANSI rows (fast, without rich.Table)."""
+    """Format functions as ANSI rows (fast, without rich.Table).
+
+    `module_ids`: functionIndex -> Metro numeric module id (recover_modules(),
+    `__d()` pattern-matching -- the case real React Native bundles use).
+    `cjs_module_paths`: functionIndex -> source file path (cjs_modules(),
+    header.cjsModuleCount -- Hermes's native `-commonjs` mode, never present
+    on the same file as `module_ids` in practice; see
+    doc/hbc-format/v96-format.md §9). Both tag only a module's own wrapper
+    function, never functions nested inside it.
+    """
     rows = []
     for f in funcs:
         marker = "*" if f.index == global_idx else " "
@@ -229,6 +255,8 @@ def functions_to_ansi_rows(
         mod_str = ""
         if module_ids and f.index in module_ids:
             mod_str = f"  \x1b[36mmodule #{module_ids[f.index]}\x1b[0m"
+        elif cjs_module_paths and f.index in cjs_module_paths:
+            mod_str = f"  \x1b[36mmodule {cjs_module_paths[f.index]!r}\x1b[0m"
         rows.append(
             f"\x1b[2m[{f.index:5d}]{marker}\x1b[0m "
             f"\x1b[1m{f.name:<32}\x1b[0m "

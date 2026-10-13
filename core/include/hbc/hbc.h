@@ -218,6 +218,27 @@ struct ModuleInfo {
     uint32_t moduleId;
 };
 
+// An entry of the CJS Module Table (header.cjsModuleCount), present only
+// when the file was compiled with Hermes's own native CommonJS mode
+// (`hermes -commonjs`), never in a Metro-bundled bundle (recover_modules()
+// covers that case instead; the two mechanisms are mutually exclusive). See
+// doc/hbc-format/v96-format.md §9 for the on-disk format. The table has two
+// on-disk shapes, selected by header.options.cjsModulesStaticallyResolved;
+// as of the public Hermes source this project targets, the "static" shape
+// can never actually be emitted by the compiler (confirmed by reading
+// ResolveStaticRequire's dead `getUseCJSModules()` guard and by compiling
+// samples), so `modulePath` is populated and `isStaticallyResolved` is
+// false in every file observed so far.
+struct CJSModuleInfo {
+    uint32_t    functionIndex;        // the module's wrapper function (exports, require, module)
+    bool        isStaticallyResolved; // header.options bit 1, see above
+    uint32_t    moduleId;             // raw "first" field of the entry: a String Table
+                                       // index when !isStaticallyResolved, otherwise a
+                                       // compiler-assigned integer (never observed)
+    std::string modulePath;           // !isStaticallyResolved only: strings()[moduleId],
+                                       // the module's source file path. Empty otherwise.
+};
+
 // Maps a bytecode address to a source position (from the debug info section).
 struct SourceLocation {
     uint32_t address;  // from the start of the function's bytecode
@@ -307,6 +328,7 @@ public:
     std::vector<StringXRef>          string_xrefs()                 const;
     std::vector<CallSite>            call_graph()                   const;
     std::vector<ModuleInfo>          recover_modules()              const;
+    std::vector<CJSModuleInfo>       cjs_modules()                  const;
     std::vector<std::string>         source_files()                 const;
     std::vector<SourceLocation>      source_locations(uint32_t functionIndex) const;
     std::string                      decompile(uint32_t functionIndex) const;

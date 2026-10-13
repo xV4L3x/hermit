@@ -5,6 +5,7 @@ add_library(hbc STATIC
     src/parser/string_kind.cpp
     src/parser/exception_table.cpp
     src/parser/function_source_table.cpp
+    src/parser/cjs_module_table.cpp
     src/format/opcodes.cpp
     src/format/opcodes_v94.cpp
     src/format/opcodes_v95.cpp

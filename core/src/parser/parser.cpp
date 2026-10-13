@@ -24,6 +24,7 @@
 #include "parser/string_kind.h"
 #include "parser/exception_table.h"
 #include "parser/function_source_table.h"
+#include "parser/cjs_module_table.h"
 #include "disasm/disasm.h"
 #include "cfg/cfg.h"
 
@@ -47,6 +48,7 @@ struct HBCFile::Impl {
     mutable std::optional<std::vector<StringEntry>>  stringEntries;
     mutable std::optional<std::vector<CallSite>>     callGraph;
     mutable std::optional<std::vector<ModuleInfo>>   modules;
+    mutable std::optional<std::vector<CJSModuleInfo>> cjsModules;
     mutable std::optional<std::vector<LiteralSite>>  literalSites;
     mutable std::optional<std::string> arrayBuffer, objKeyBuffer, objValueBuffer;
 
@@ -176,6 +178,20 @@ std::vector<ModuleInfo> HBCFile::recover_modules() const {
     if (!impl_->modules)
         impl_->modules = computeModules(*this);
     return *impl_->modules;
+}
+
+std::vector<CJSModuleInfo> HBCFile::cjs_modules() const {
+    if (!impl_->cjsModules) {
+        uint32_t sectionOffset = 0;
+        for (const auto& s : section_map())
+            if (s.name == "cjs module table") { sectionOffset = s.offset; break; }
+
+        const bool staticallyResolved = (header().options >> 1) & 1;
+        impl_->cjsModules = parseCJSModuleTable(
+            raw_data(), sectionOffset, header().cjsModuleCount,
+            staticallyResolved, strings());
+    }
+    return *impl_->cjsModules;
 }
 
 const std::vector<LiteralSite>& HBCFile::literal_sites() const {
@@ -355,7 +371,10 @@ static int64_t readSLEB128(const uint8_t* data, uint32_t limit, uint32_t& pos) {
 // Layout of the debug info section, starting at header.debugInfoOffset:
 //   DebugInfoHeader                       7 x uint32
 //   filename table                        filenameCount x { offset, length }, 8 bytes each
-//   filename storage                      filenameStorageSize bytes, NUL-separated
+//   filename storage                      filenameStorageSize bytes, NOT NUL-separated:
+//     consecutive names can sit back-to-back with no terminator (verified on a
+//     real filenameCount == 2 file -- see source_files(), which reads the
+//     filename table's (offset, length) pairs rather than scanning for \0)
 //   file regions                          fileRegionCount x 12 bytes
 //   data blob, in 4 contiguous sub-sections (see DebugInfoHeader in hbc.h):
 //     source location data, scope descriptors, textified callees, debug string table
@@ -395,22 +414,29 @@ std::vector<std::string> HBCFile::source_files() const {
     if (!computeDebugLayout(*impl_->hdr, raw_data(), static_cast<uint32_t>(raw_size()), layout))
         return {};
 
-    const uint32_t fileSize = static_cast<uint32_t>(raw_size());
+    const uint32_t fileSize    = static_cast<uint32_t>(raw_size());
     const uint32_t storageSize = layout.hdr.filenameStorageSize;
 
     if (storageSize == 0 || layout.filenameStorageStart + storageSize > fileSize)
         return {};
 
-    const uint8_t* p   = raw_data() + layout.filenameStorageStart;
-    const uint8_t* end = p + storageSize;
+    // Filename table: filenameCount x { offset:u32, length:u32 } into the
+    // filename storage blob, right before it (see the DebugLayout comment).
+    constexpr uint32_t HEADER_SIZE = 7 * 4;
+    const uint32_t tableStart = impl_->hdr->debugInfoOffset + HEADER_SIZE;
+    const uint8_t* storage    = raw_data() + layout.filenameStorageStart;
 
     std::vector<std::string> result;
     result.reserve(layout.hdr.filenameCount);
-    while (p < end && result.size() < layout.hdr.filenameCount) {
-        const uint8_t* nul = p;
-        while (nul < end && *nul != '\0') ++nul;
-        result.emplace_back(reinterpret_cast<const char*>(p), nul - p);
-        p = nul + 1;
+    for (uint32_t i = 0; i < layout.hdr.filenameCount; ++i) {
+        uint32_t off = 0, len = 0;
+        std::memcpy(&off, raw_data() + tableStart + i * 8,     4);
+        std::memcpy(&len, raw_data() + tableStart + i * 8 + 4, 4);
+        if (static_cast<uint64_t>(off) + len > storageSize) {
+            result.emplace_back();  // corrupt entry: keep positional alignment, don't crash
+            continue;
+        }
+        result.emplace_back(reinterpret_cast<const char*>(storage + off), len);
     }
     return result;
 }
