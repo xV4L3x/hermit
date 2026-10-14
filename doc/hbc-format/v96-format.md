@@ -143,7 +143,7 @@ analysis and its consequences for patching.
 | `stringKindCount` | 0x2C | 4 | `u32` | number of RLE runs in the String Kind Table (§5.1), not the number of strings |
 | `identifierCount` | 0x30 | 4 | `u32` | number of strings used as property/variable names (a subset of all strings, flagged `Identifier` in §5.1) |
 | `stringCount` | 0x34 | 4 | `u32` | total string count (`Identifier` + plain `String`) |
-| `overflowStringCount` | 0x38 | 4 | `u32` | strings whose length ≥ 255 characters, which don't fit `SmallStringTableEntry.length` (§5.3–5.4) |
+| `overflowStringCount` | 0x38 | 4 | `u32` | number of strings stored in the Overflow String Table: those of length ≥ 255 characters or with an offset ≥ 2²³ in String Storage (§5.3–5.4) |
 | `stringStorageSize` | 0x3C | 4 | `u32` | bytes of the raw string blob (§5.5) |
 | `bigIntCount` | 0x40 | 4 | `u32` | **NOT YET EXPLORED**, see §7 |
 | `bigIntStorageSize` | 0x44 | 4 | `u32` | ″ |
@@ -353,8 +353,12 @@ without re-hashing the string at runtime.
 | Bits | Field | Notes |
 |---|---|---|
 | 0 | `isUTF16` | `0` = the string is stored in CESU-8 (Modified UTF-8 — ASCII-compatible for the ASCII subset, but not standard UTF-8 for surrogate-pair characters); `1` = stored as UTF-16LE in String Storage |
-| 1–23 | `offset` | into String Storage (§5.5) |
-| 24–31 | `length` | **in characters**, not bytes; the sentinel value `255` means "look up the real offset/length in the Overflow String Table instead" (§5.4) |
+| 1–23 | `offset` | into String Storage (§5.5); when `length` is `255`, the index of this string's entry in the Overflow String Table (§5.4) |
+| 24–31 | `length` | **in characters**, not bytes; the value `255` marks a string whose real offset/length are in the Overflow String Table (§5.4) |
+
+A string is stored in the Overflow String Table when its length is ≥ 255
+characters or when its offset in String Storage is ≥ 2²³ (the largest offset
+that fits 23 bits); in both cases `length` is `255`.
 
 Real React Native bundles make real use of both encodings: `ridemovi.hbc`
 has 9198 UTF-16 entries out of 54719 total strings, and 647 entries that
@@ -368,11 +372,14 @@ CSS block).
 | `offset` | 0x0 | 4 | into String Storage |
 | `length` | 0x4 | 4 | in characters |
 
-Correspondence with the String Table (§5.3) is **purely positional**: the
-*N*-th `SmallStringTableEntry` with `length == 255` (scanning in table
-order) is paired with the *N*-th entry of this table. `isUTF16` is **not**
-duplicated here — it stays on the small entry even when the real
-offset/length live in the overflow table.
+Each entry is addressed by the `offset` field of the `SmallStringTableEntry`
+(§5.3) of its string: the entry of string *i* with `length == 255` is entry
+`small[i].offset` of this table (`BytecodeDataProvider::getStringTableEntry`
+in the v96 source reads `overflowStringTableEntries_[smallHeader.offset]`).
+The Hermes compiler numbers the entries in the order of the string table
+(`BytecodeSerializer::visitSmallStringTable`): the first string with
+`length == 255` has index 0, the next one index 1, and so on. `isUTF16`
+stays on the small entry, which is the only place where it is stored.
 
 ### 5.5 String Storage (`stringStorageSize` B)
 

@@ -2,6 +2,9 @@
 #include "hbc/hbc.h"
 #include <algorithm>
 #include <cstring>
+#include <stdexcept>
+#include <string>
+#include <vector>
 
 static const std::string HELLO = std::string(HBC_CORPUS_DIR) + "/hello.hbc";
 
@@ -67,4 +70,74 @@ TEST_CASE("narrow CESU-8 surrogate pair decodes to real UTF-8", "[string-table][
     const auto& strs = f.strings();
     REQUIRE(strs.size() == 1);
     REQUIRE(strs[0] == std::string("\xF0\x9F\x98\x80", 4));
+}
+
+// A small entry with length == 255 carries in `offset` the index of its entry in
+// the Overflow String Table (Hermes' BytecodeDataProvider::getStringTableEntry
+// reads overflowStringTableEntries_[small.offset]). The synthetic files below
+// name the slots in descending order, name the same slot twice and name a slot
+// outside the table.
+static std::string buildOverflowFile(const std::vector<uint32_t>& sentinelIndices,
+                                     uint32_t overflowCount) {
+    // String table: [sentinel, small "x", sentinel ...]; storage "alphabravo!x".
+    //   overflow slot 0 = "alpha"  (offset 0, length 5)
+    //   overflow slot 1 = "bravo!" (offset 5, length 6)
+    const uint8_t storage[] = {'a','l','p','h','a','b','r','a','v','o','!','x'};
+    const uint32_t stringCount = static_cast<uint32_t>(sentinelIndices.size()) + 1;
+
+    hbc::HBCFileHeader hdr{};
+    hdr.magic                = hbc::HBC_MAGIC;
+    hdr.version              = 96;
+    hdr.stringCount          = stringCount;
+    hdr.overflowStringCount  = overflowCount;
+    hdr.stringStorageSize    = sizeof(storage);
+
+    std::vector<hbc::SmallStringTableEntry> small;
+    for (size_t i = 0; i < sentinelIndices.size(); ++i) {
+        hbc::SmallStringTableEntry e{};
+        e.isUTF16 = 0;
+        e.offset  = sentinelIndices[i];
+        e.length  = 255;
+        small.push_back(e);
+        if (i == 0) {                       // a plain small entry between the sentinels
+            hbc::SmallStringTableEntry s{};
+            s.isUTF16 = 0; s.offset = 11; s.length = 1;
+            small.push_back(s);
+        }
+    }
+    const hbc::OverflowStringTableEntry ovf[2] = {{0, 5}, {5, 6}};
+
+    std::string buf(sizeof(hdr) + small.size() * 4 + overflowCount * 8 + sizeof(storage), '\0');
+    size_t pos = sizeof(hdr);
+    std::memcpy(buf.data() + pos, small.data(), small.size() * 4);   pos += small.size() * 4;
+    std::memcpy(buf.data() + pos, ovf, overflowCount * 8);           pos += overflowCount * 8;
+    std::memcpy(buf.data() + pos, storage, sizeof(storage));
+    hdr.fileLength = static_cast<uint32_t>(buf.size());
+    std::memcpy(buf.data(), &hdr, sizeof(hdr));
+    return buf;
+}
+
+TEST_CASE("overflow entry is addressed by the small entry's offset",
+          "[string-table][strings][overflow]") {
+    // [0] -> slot 1, [1] = plain "x", [2] -> slot 0
+    auto f = hbc::HBCFile::from_bytes(buildOverflowFile({1, 0}, 2));
+    const auto& strs = f.strings();
+    REQUIRE(strs.size() == 3);
+    REQUIRE(strs[0] == "bravo!");
+    REQUIRE(strs[1] == "x");
+    REQUIRE(strs[2] == "alpha");
+}
+
+TEST_CASE("two entries may refer to the same overflow slot",
+          "[string-table][strings][overflow]") {
+    auto f = hbc::HBCFile::from_bytes(buildOverflowFile({1, 1}, 2));
+    const auto& strs = f.strings();
+    REQUIRE(strs[0] == "bravo!");
+    REQUIRE(strs[2] == "bravo!");
+}
+
+TEST_CASE("overflow index outside the table is rejected",
+          "[string-table][strings][overflow]") {
+    auto f = hbc::HBCFile::from_bytes(buildOverflowFile({2, 0}, 2));
+    REQUIRE_THROWS_AS(f.strings(), std::runtime_error);
 }

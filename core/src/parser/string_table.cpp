@@ -1,15 +1,19 @@
 // The string section triple (see HBCFileHeader):
 //   String Table          stringCount x SmallStringTableEntry { isUTF16, offset, length }
-//                         offset points into the String Storage; length == 255 is a
-//                         sentinel meaning "read the Overflow Table".
-//   Overflow String Table OverflowStringTableEntry { offset, length }, used only for
-//                         long strings, matched in order to the entries with length == 255.
+//                         offset points into the String Storage; length == 255 marks a
+//                         string stored in the Overflow Table, and then `offset` is the
+//                         index of its entry there.
+//   Overflow String Table OverflowStringTableEntry { offset, length } for the strings whose
+//                         length is >= 255 or whose offset doesn't fit in 23 bits; the
+//                         entry of a string is the one at index `small.offset`.
 //   String Storage        flat blob of UTF-16LE and CESU-8 strings, without separators.
 
 #include "parser/string_table.h"
 #include "parser/section_layout.h"
 
 #include <cstring>
+#include <stdexcept>
+#include <string>
 
 namespace hbc {
 
@@ -108,9 +112,9 @@ std::string cesu8ToUtf8(const uint8_t* src, uint32_t len) {
     return result;
 }
 
-// Offset and length of string i, read from the overflow table when the small
-// entry is the 255 sentinel. `ovfIndex` advances once per overflow entry
-// (the match is positional, there is no explicit index).
+// Offset and length of a string. When the small entry has length 255 they are
+// read from the overflow table at index `entry.offset`, as in Hermes'
+// BytecodeDataProvider::getStringTableEntry.
 struct StringLocation {
     uint32_t offset;
     uint32_t length;  // characters for UTF-16, bytes for CESU-8
@@ -118,9 +122,13 @@ struct StringLocation {
 };
 
 StringLocation locate(const SmallStringTableEntry& entry,
-                      const OverflowStringTableEntry* ovfTable, uint32_t& ovfIndex) {
+                      const OverflowStringTableEntry* ovfTable, uint32_t ovfCount) {
     if (entry.length == 255) {
-        const auto& ovf = ovfTable[ovfIndex++];
+        if (entry.offset >= ovfCount)
+            throw std::runtime_error("string table: overflow index " + std::to_string(entry.offset) +
+                                     " out of range (overflowStringCount = " +
+                                     std::to_string(ovfCount) + ")");
+        const auto& ovf = ovfTable[entry.offset];
         return {ovf.offset, ovf.length, true};
     }
     return {entry.offset, entry.length, false};
@@ -140,10 +148,9 @@ std::vector<std::string> parseStringTable(const uint8_t* data, const HBCFileHead
     std::vector<std::string> result;
     result.reserve(hdr.stringCount);
 
-    uint32_t ovfIndex = 0;
     for (uint32_t i = 0; i < hdr.stringCount; ++i) {
         const auto& entry = strTable[i];
-        const auto loc = locate(entry, ovfTable, ovfIndex);
+        const auto loc = locate(entry, ovfTable, hdr.overflowStringCount);
 
         // isUTF16 always comes from the small entry: the overflow table has no such field.
         if (entry.isUTF16)
@@ -165,10 +172,9 @@ std::vector<StringEntry> parseStringEntries(const uint8_t* data,
     std::vector<StringEntry> result;
     result.reserve(hdr.stringCount);
 
-    uint32_t ovfIndex = 0;
     for (uint32_t i = 0; i < hdr.stringCount; ++i) {
         const auto& entry = strTable[i];
-        const auto loc = locate(entry, ovfTable, ovfIndex);
+        const auto loc = locate(entry, ovfTable, hdr.overflowStringCount);
 
         StringEntry se;
         se.storageOffset = off.stringStorage + loc.offset;

@@ -371,14 +371,25 @@ void Module::set_string_value(uint32_t idx, const std::string& newBytes) {
         throw std::runtime_error(
             "Module::set_string_value: promotion to overflow not supported");
 
-    // Overflow slot, consumed POSITIONALLY like the parser: the number of
-    // sentinels (length == 255) among the entries before idx.
+    // Overflow slot: the small entry's `offset` is the index into the overflow
+    // table (Hermes' BytecodeDataProvider::getStringTableEntry).
     uint32_t ovfSlot = 0;
     if (wasOverflow) {
-        for (uint32_t j = 0; j < idx; ++j) {
+        ovfSlot = e.offset;
+        if (ovfSlot >= overflowTable_.size() / 8)
+            throw std::runtime_error(
+                "Module::set_string_value: overflow index out of range");
+        // The edit rewrites the slot in place, so a slot used by several entries
+        // is refused.
+        const uint32_t count = static_cast<uint32_t>(stringTable_.size() / 4);
+        for (uint32_t j = 0; j < count; ++j) {
+            if (j == idx) continue;
             SmallStringTableEntry ej;
             std::memcpy(&ej, stringTable_.data() + j * 4, 4);
-            if (ej.length == 255) ++ovfSlot;
+            if (ej.length == 255 && ej.offset == ovfSlot)
+                throw std::runtime_error(
+                    "Module::set_string_value: overflow slot shared by several entries "
+                    "- not supported");
         }
     }
 
@@ -603,7 +614,11 @@ Module::StringSections Module::buildStringSections() const {
                     throw std::runtime_error("Module: string storage beyond 8 MB - not handled");
                 appendU32(ss.stringTable, packSmallString(false, offRel, len));
             } else {
-                appendU32(ss.stringTable, 255u << 24);   // sentinel length == 255
+                // Sentinel length == 255; `offset` is the index of the new slot in
+                // the overflow table (existing slots + those added so far), which
+                // is where the VM reads it: overflowTable[small.offset].
+                appendU32(ss.stringTable,
+                          packSmallString(false, ss.overflowCount + addedOverflow, 255));
                 appendU32(ss.overflowTable, offRel);     // OverflowStringTableEntry
                 appendU32(ss.overflowTable, len);
                 ++addedOverflow;

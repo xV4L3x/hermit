@@ -57,7 +57,9 @@ struct HBCFileHeader {            // First 128 bytes of every HBC file.
 static_assert(sizeof(HBCFileHeader) == 128);
 
 // 4 bytes per string (bitfields assigned LSB-first on little-endian).
-// length == 255 is the sentinel for "real offset/length in OverflowStringTableEntry".
+// length == 255 is the sentinel for "real offset/length in OverflowStringTableEntry";
+// in that case `offset` is the index of that entry in the overflow table (a string
+// goes there when length >= 255 or when its offset doesn't fit in 23 bits).
 struct SmallStringTableEntry {
     uint32_t isUTF16 : 1;
     uint32_t offset  : 23;  // into string storage
@@ -65,7 +67,8 @@ struct SmallStringTableEntry {
 };
 static_assert(sizeof(SmallStringTableEntry) == 4);
 
-// Holds the real offset/length of strings with SmallStringTableEntry.length == 255.
+// Holds the real offset/length of strings with SmallStringTableEntry.length == 255;
+// indexed by the `offset` field of that small entry.
 struct OverflowStringTableEntry {
     uint32_t offset;
     uint32_t length;
