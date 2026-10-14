@@ -341,8 +341,8 @@ uint32_t Module::add_string(const std::string& value) {
     for (unsigned char c : value)
         if (c >= 0x80)
             throw std::invalid_argument(
-                "Module::add_string: non-ASCII character - CESU-8 / UTF-16 encoder "
-                "not supported");
+                "Module::add_string: non-ASCII character - only ASCII strings can be "
+                "added (a string with other characters is stored as UTF-16, not supported)");
     pendingStrings_.push_back(value);
     return origStringCount_ + static_cast<uint32_t>(pendingStrings_.size()) - 1;
 }

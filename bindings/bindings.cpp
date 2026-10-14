@@ -17,8 +17,8 @@ py::bytes toBytes(const std::string& s) {
 }
 
 // Decodes with errors="replace" instead of relying on pybind11's strict UTF-8
-// conversion. The C++ side already normalizes strings (CESU-8 and UTF-16LE to
-// UTF-8), but this is a reverse-engineering tool and its input is not
+// conversion. The C++ side already converts strings (ASCII and UTF-16LE) to
+// UTF-8, but this is a reverse-engineering tool and its input is not
 // necessarily well-formed: a mangled string beats a crash.
 py::str decodeUtf8(const std::string& s) {
     return toBytes(s).attr("decode")("utf-8", "replace");

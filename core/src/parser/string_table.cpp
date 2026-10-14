@@ -6,7 +6,10 @@
 //   Overflow String Table OverflowStringTableEntry { offset, length } for the strings whose
 //                         length is >= 255 or whose offset doesn't fit in 23 bits; the
 //                         entry of a string is the one at index `small.offset`.
-//   String Storage        flat blob of UTF-16LE and CESU-8 strings, without separators.
+//   String Storage        flat blob of ASCII strings (isUTF16 = 0, one byte per character) and
+//                         UTF-16LE strings (isUTF16 = 1, two bytes per code unit), without
+//                         separators. The Hermes compiler stores a string as ASCII when all its
+//                         characters are ASCII and as UTF-16 otherwise (StringTableBuilder).
 
 #include "parser/string_table.h"
 #include "parser/section_layout.h"
@@ -19,8 +22,7 @@ namespace hbc {
 
 namespace {
 
-// Appends a code point (U+0000..U+10FFFF) as UTF-8. Surrogate code points
-// are encoded as 3 bytes, like any other BMP value.
+// Appends a code point (U+0000..U+10FFFF, not a surrogate) as UTF-8.
 void appendUtf8(std::string& out, uint32_t cp) {
     if (cp < 0x80) {
         out += static_cast<char>(cp);
@@ -43,9 +45,11 @@ uint32_t combineSurrogates(uint16_t hi, uint16_t lo) {
     return 0x10000 + ((static_cast<uint32_t>(hi) - 0xD800) << 10) + (lo - 0xDC00);
 }
 
-// Converts UTF-16LE to UTF-8, recombining surrogate pairs into supplementary
-// code points. Real RN bundles contain them (emoji), so BMP-only isn't enough.
-// An unpaired surrogate is encoded as-is (3 bytes).
+// Converts UTF-16LE to UTF-8. `numCodeUnits` counts 16-bit code units; a
+// surrogate pair (high D800..DBFF followed by low DC00..DFFF) is one
+// supplementary character (emoji in real RN bundles) and becomes one 4-byte
+// UTF-8 sequence. An unpaired surrogate becomes U+FFFD, as in Hermes'
+// convertUTF16ToUTF8WithReplacements (used by RuntimeModule::getStringFromStringID).
 std::string utf16LeToUtf8(const uint8_t* src, uint32_t numCodeUnits) {
     std::string result;
     result.reserve(numCodeUnits);
@@ -63,53 +67,17 @@ std::string utf16LeToUtf8(const uint8_t* src, uint32_t numCodeUnits) {
                 continue;
             }
         }
-        appendUtf8(result, cu);
+        appendUtf8(result, (cu >= 0xD800 && cu <= 0xDFFF) ? 0xFFFD : cu);
     }
     return result;
 }
 
-// Converts CESU-8 to UTF-8. Hermes encodes narrow strings by UTF-8-encoding
-// each UTF-16 code unit separately, so a supplementary character becomes two
-// 3-byte surrogate sequences instead of one 4-byte sequence. Everything else
-// is already valid UTF-8 and is copied verbatim; only surrogate pairs are
-// recombined. (Strict decoders, pybind11's included, reject the CESU-8 form.)
-// An unpaired surrogate is copied through unchanged; bindings.cpp's
-// errors="replace" fallback covers it.
-std::string cesu8ToUtf8(const uint8_t* src, uint32_t len) {
-    std::string result;
-    result.reserve(len);
-
-    auto decode3 = [&](uint32_t at) {
-        return static_cast<uint16_t>(((src[at] & 0x0F) << 12) |
-                                     ((src[at + 1] & 0x3F) << 6) |
-                                     (src[at + 2] & 0x3F));
-    };
-
-    uint32_t i = 0;
-    while (i < len) {
-        const uint8_t b0 = src[i];
-
-        // Only a 3-byte sequence (lead 1110xxxx) can encode a surrogate half.
-        if ((b0 & 0xF0) == 0xE0 && i + 6 <= len && (src[i + 3] & 0xF0) == 0xE0) {
-            const uint16_t hi = decode3(i);
-            const uint16_t lo = decode3(i + 3);
-            if (hi >= 0xD800 && hi <= 0xDBFF && lo >= 0xDC00 && lo <= 0xDFFF) {
-                appendUtf8(result, combineSurrogates(hi, lo));
-                i += 6;
-                continue;
-            }
-        }
-
-        uint32_t seqLen = (b0 < 0x80)           ? 1
-                        : ((b0 & 0xE0) == 0xC0) ? 2
-                        : ((b0 & 0xF0) == 0xE0) ? 3
-                                                : 1;
-        if (seqLen > len - i) seqLen = len - i;
-        result.append(reinterpret_cast<const char*>(src + i), seqLen);
-        i += seqLen;
-    }
-
-    return result;
+// Narrow entries (isUTF16 = 0) hold ASCII: the bytes are the characters, so the
+// string is copied as it is, like Hermes' RuntimeModule::getStringFromStringID.
+// (The compiler never writes a byte >= 0x80 there; such a byte would be copied
+// unchanged and left to the caller's decoder.)
+std::string asciiToString(const uint8_t* src, uint32_t len) {
+    return std::string(reinterpret_cast<const char*>(src), len);
 }
 
 // Offset and length of a string. When the small entry has length 255 they are
@@ -117,7 +85,7 @@ std::string cesu8ToUtf8(const uint8_t* src, uint32_t len) {
 // BytecodeDataProvider::getStringTableEntry.
 struct StringLocation {
     uint32_t offset;
-    uint32_t length;  // characters for UTF-16, bytes for CESU-8
+    uint32_t length;  // code units: 16-bit units for UTF-16, bytes (= characters) for ASCII
     bool     isOverflow;
 };
 
@@ -156,7 +124,7 @@ std::vector<std::string> parseStringTable(const uint8_t* data, const HBCFileHead
         if (entry.isUTF16)
             result.push_back(utf16LeToUtf8(strStorage + loc.offset, loc.length));
         else
-            result.push_back(cesu8ToUtf8(strStorage + loc.offset, loc.length));
+            result.push_back(asciiToString(strStorage + loc.offset, loc.length));
     }
 
     return result;

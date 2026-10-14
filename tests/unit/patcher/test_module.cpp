@@ -345,7 +345,7 @@ TEST_CASE("Module identity on overflow_func.hbc", "[patcher]") {
 // as RN ships it (HBC 96, ~1.4 MB, Hermes V1 disabled). Gitignored: rebuild
 // with `npm run build:hbc` in hermit-vault/. Unlike the toy samples it carries the
 // full structure of a shipped bundle (Metro module system, many functions,
-// UTF-16/CESU-8 strings), so proving the structural serializer reproduces it
+// UTF-16 strings), so proving the structural serializer reproduces it
 // byte-for-byte anchors the round-trip claim on the application it is meant to
 // analyse.
 TEST_CASE("Module identity on hermitvault.hbc (demo app bundle)", "[patcher]") {

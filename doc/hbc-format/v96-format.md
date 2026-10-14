@@ -143,7 +143,7 @@ analysis and its consequences for patching.
 | `stringKindCount` | 0x2C | 4 | `u32` | number of RLE runs in the String Kind Table (§5.1), not the number of strings |
 | `identifierCount` | 0x30 | 4 | `u32` | number of strings used as property/variable names (a subset of all strings, flagged `Identifier` in §5.1) |
 | `stringCount` | 0x34 | 4 | `u32` | total string count (`Identifier` + plain `String`) |
-| `overflowStringCount` | 0x38 | 4 | `u32` | number of strings stored in the Overflow String Table: those of length ≥ 255 characters or with an offset ≥ 2²³ in String Storage (§5.3–5.4) |
+| `overflowStringCount` | 0x38 | 4 | `u32` | number of strings stored in the Overflow String Table: those of length ≥ 255 code units or with an offset ≥ 2²³ in String Storage (§5.3–5.4) |
 | `stringStorageSize` | 0x3C | 4 | `u32` | bytes of the raw string blob (§5.5) |
 | `bigIntCount` | 0x40 | 4 | `u32` | **NOT YET EXPLORED**, see §7 |
 | `bigIntStorageSize` | 0x44 | 4 | `u32` | ″ |
@@ -352,25 +352,39 @@ without re-hashing the string at runtime.
 
 | Bits | Field | Notes |
 |---|---|---|
-| 0 | `isUTF16` | `0` = the string is stored in CESU-8 (Modified UTF-8 — ASCII-compatible for the ASCII subset, but not standard UTF-8 for surrogate-pair characters); `1` = stored as UTF-16LE in String Storage |
+| 0 | `isUTF16` | `0` = the string is ASCII in String Storage, one byte per character; `1` = the string is UTF-16LE in String Storage, two bytes per code unit |
 | 1–23 | `offset` | into String Storage (§5.5); when `length` is `255`, the index of this string's entry in the Overflow String Table (§5.4) |
-| 24–31 | `length` | **in characters**, not bytes; the value `255` marks a string whose real offset/length are in the Overflow String Table (§5.4) |
+| 24–31 | `length` | in code units: the bytes of an ASCII entry, the 16-bit units of a UTF-16 entry (a character outside the Basic Multilingual Plane is a surrogate pair, two units); the value `255` marks a string whose real offset/length are in the Overflow String Table (§5.4) |
 
 A string is stored in the Overflow String Table when its length is ≥ 255
-characters or when its offset in String Storage is ≥ 2²³ (the largest offset
+code units or when its offset in String Storage is ≥ 2²³ (the largest offset
 that fits 23 bits); in both cases `length` is `255`.
 
+The Hermes compiler stores a string as ASCII when all its characters are
+ASCII and as UTF-16 otherwise (`StringTableBuilder` in
+`lib/BCGen/HBC/ConsecutiveStringStorage.cpp`; `doc/Strings.md`: "ASCII String
+Storage" and "UTF16 String Storage"). A string such as `caffè` is therefore
+UTF-16 as a whole, ASCII letters included. Unpaired surrogates (`"\uD800"` in
+the source) are kept as code units of a UTF-16 entry.
+
 Real React Native bundles make real use of both encodings: `ridemovi.hbc`
-has 9198 UTF-16 entries out of 54719 total strings, and 647 entries that
-hit the overflow sentinel (one observed example: a 458-character inlined
-CSS block).
+has 45521 ASCII entries (no byte ≥ 0x80) and 9198 UTF-16 entries out of 54719
+total strings, with 1730 surrogate pairs and no unpaired surrogate, and 647
+entries that hit the overflow sentinel (one observed example: a 458-character
+inlined CSS block).
+
+hermit returns each string as UTF-8: the bytes of an ASCII entry as they are, a
+UTF-16 entry converted with surrogate pairs recombined into one character and
+an unpaired surrogate replaced by U+FFFD (as Hermes'
+`RuntimeModule::getStringFromStringID` does through
+`convertUTF16ToUTF8WithReplacements`).
 
 ### 5.4 Overflow String Table (`overflowStringCount` × 8 B)
 
 | Field | Off | B | Notes |
 |---|---|---|---|
 | `offset` | 0x0 | 4 | into String Storage |
-| `length` | 0x4 | 4 | in characters |
+| `length` | 0x4 | 4 | in code units |
 
 Each entry is addressed by the `offset` field of the `SmallStringTableEntry`
 (§5.3) of its string: the entry of string *i* with `length == 255` is entry
@@ -386,7 +400,7 @@ stays on the small entry, which is the only place where it is stored.
 A single raw blob holding every string's encoded bytes back to back, with
 **no separators** — individual string boundaries exist only through the
 `(offset, length)` pairs of §5.3/§5.4, never through a terminator byte.
-Each string is encoded per its own `isUTF16` flag (CESU-8 or UTF-16LE); two
+Each string is encoded per its own `isUTF16` flag (ASCII or UTF-16LE); two
 different strings' encoded bytes are allowed to overlap when one is a
 suffix or prefix of the other, which Hermes's compiler exploits as a space
 optimization.

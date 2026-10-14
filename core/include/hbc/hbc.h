@@ -27,8 +27,9 @@ enum class StringKind : uint8_t {
 // HBCFile::string_entries() is parallel to strings() and stringKinds().
 struct StringEntry {
     uint32_t   storageOffset;  // ABSOLUTE file offset of the first byte
-    uint32_t   byteLength;     // charLength, or charLength * 2 if UTF-16
-    uint32_t   charLength;     // resolved (overflow table included)
+    uint32_t   byteLength;     // bytes in the storage: charLength (ASCII) or charLength * 2 (UTF-16)
+    uint32_t   charLength;     // code units: bytes of an ASCII entry, 16-bit units of a UTF-16 one
+                               // (resolved, overflow table included)
     bool       isUTF16;
     bool       isOverflow;     // SmallStringTableEntry.length == 255
     StringKind kind;
@@ -177,7 +178,7 @@ struct XRefSite {
 // Reference sites of one string. string_xrefs() only returns strings with at least one site.
 struct StringXRef {
     uint32_t              stringIndex;  // in strings() and stringKinds()
-    std::string           stringValue;  // raw CESU-8 bytes
+    std::string           stringValue;  // the string as UTF-8 (as in strings())
     std::vector<XRefSite> sites;        // never empty
 };
 

@@ -56,9 +56,8 @@ def _encode_for_entry(value: str, entry, *, same_length: bool) -> bytes:
             enc = value.encode("ascii")
         except UnicodeEncodeError:
             raise _StrEditError(
-                "non-ASCII character on an 8-bit entry - CESU-8 deferred to the relocation path"
-                if same_length
-                else "non-ASCII character on an 8-bit entry - CESU-8 not yet supported")
+                "non-ASCII character on an ASCII (8-bit) entry - the entry would have to "
+                "become UTF-16 (not supported)")
 
     if same_length and len(enc) != entry.byte_length:
         raise _StrEditError(
@@ -109,8 +108,8 @@ def encode_new_string(value: str) -> bytes:
         return value.encode("ascii")
     except UnicodeEncodeError:
         raise _StrEditError(
-            "non-ASCII character - CESU-8 / UTF-16 encoder for new strings "
-            "not yet supported")
+            "non-ASCII character - new strings are ASCII only (UTF-16 encoding of new "
+            "strings not supported)")
 
 
 class StringEditState(TextBufferMixin):
@@ -263,7 +262,7 @@ class StringEditState(TextBufferMixin):
 
     def request_exit(self, event):
         # An unchanged buffer always exits, even if `original` can't be
-        # re-encoded (e.g. real CESU-8): nothing to save.
+        # re-encoded (e.g. a UTF-16 entry holding an isolated surrogate): nothing to save.
         if self.buf == self.original:
             self.value = self.original
             self.commit = False
