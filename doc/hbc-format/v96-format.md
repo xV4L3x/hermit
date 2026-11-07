@@ -441,8 +441,38 @@ strings, then 1 bool, ..."), not as one tag per element.
 | 7 | `Integer` | 4 | `i32` (signed — a run of small negative array/object values is still tag `Integer`, not a separate signed/unsigned distinction) |
 
 This format is documented in the Hermes source
-(`SerializedLiteralGenerator.h`), not invented by hermit; hermit's decoder
-lives in `cli/literals.py`.
+(`SerializedLiteralGenerator.h`), not invented by hermit; hermit has two
+decoders: `core/src/util/slp.{h,cpp}` (read only, used by the decompiler and by
+`string_xrefs()`) and `cli/literals.py` (also tracks byte offsets and encodes,
+used by the literal editors).
+
+### 6.2 Packing and where the strings are
+
+The three buffers are not a plain concatenation of one literal after another.
+When the compiler runs with optimization (`-O`, as every shipped React Native
+build does) it builds each buffer with `ConsecutiveStringStorage` in `optimize`
+mode (`LiteralBufferBuilder`, `lib/BCGen/HBC/HBC.cpp`): identical literals are
+stored once, and a literal can be a substring of another or overlap the end of
+the previous one. An instruction's offset can therefore point inside the bytes
+of another literal. Consequences:
+
+- The only valid way to read a literal is from the offset in an instruction,
+  decoding `count` elements (the third operand of `New*WithBuffer`). Reading a
+  buffer from byte 0 run after run does not reproduce the sites on an optimized
+  file and can run past the end of the buffer (`hermitvault.hbc`: 501 runs reach
+  byte 39191 of a 9108-byte buffer). `hermes -b -dump-bytecode` prints the buffers
+  that way, so it is exact only for unoptimized files; Hermes notes it may not show
+  every literal (`BytecodeDisassembler.cpp`).
+- A run of length 0 is valid (a literal can end with an empty tag, `0x30`).
+- Object keys are written with `getIdentifierID`, so a key is always an
+  `Identifier` string; array elements and object values use `getStringID` and
+  can be either kind. On `ridemovi.hbc` all 90869 key elements are Identifier strings.
+
+A string used in a literal has no instruction operand pointing at it. `xrefs
+string:` reports it with the `New*WithBuffer` instruction as the site and
+`XRefSite.kind` (`ArrayElement`, `ObjectKey`, `ObjectValue`), `elementIndex` and
+`elementCount` telling where in the literal it sits (one site per instruction and
+string, however many elements hold it).
 
 ---
 

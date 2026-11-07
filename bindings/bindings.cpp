@@ -349,10 +349,20 @@ PYBIND11_MODULE(_libhbc, m) {
     // Analysis types
     // ------------------------------------------------------------------
 
+    py::enum_<hbc::XRefKind>(m, "XRefKind")
+        .value("Operand",      hbc::XRefKind::Operand)
+        .value("ArrayElement", hbc::XRefKind::ArrayElement)
+        .value("ObjectKey",    hbc::XRefKind::ObjectKey)
+        .value("ObjectValue",  hbc::XRefKind::ObjectValue)
+    ;
+
     py::class_<hbc::XRefSite>(m, "XRefSite")
         .def_readonly("function_index",      &hbc::XRefSite::functionIndex)
         .def_readonly("instruction_offset",  &hbc::XRefSite::instructionOffset)
         .def_readonly("mnemonic",            &hbc::XRefSite::mnemonic)
+        .def_readonly("kind",                &hbc::XRefSite::kind)
+        .def_readonly("element_index",       &hbc::XRefSite::elementIndex)
+        .def_readonly("element_count",       &hbc::XRefSite::elementCount)
     ;
 
     py::class_<hbc::StringXRef>(m, "StringXRef")

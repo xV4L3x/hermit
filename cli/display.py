@@ -8,6 +8,7 @@ from rich.table import Table
 from rich.text import Text
 
 import _libhbc
+from cli.literal_preview import LiteralPreview
 
 
 def _short_path(path: str, max_len: int = 60) -> str:
@@ -392,9 +393,24 @@ def xrefs_detail_to_ansi_rows(xrefs: list, funcs: list) -> list[str]:
                 f"\x1b[2m[{site.function_index}]\x1b[0m "
                 f"\x1b[1m{fname}\x1b[0m  "
                 f"@ \x1b[33m{site.instruction_offset:#06x}\x1b[0m  "
-                f"\x1b[2m({site.mnemonic})\x1b[0m"
+                f"\x1b[2m({site.mnemonic}{_literal_ref_text(site)})\x1b[0m"
             )
     return rows
+
+
+_LITERAL_ROLE = {"ArrayElement": "element", "ObjectKey": "key", "ObjectValue": "value"}
+
+
+def _literal_ref_text(site) -> str:
+    """`, element 1` / `, key 0` / `, value 2 x2`: where in the literal buffer a
+    literal reference sits (empty for an instruction operand)."""
+    role = _LITERAL_ROLE.get(site.kind.name)
+    if role is None:
+        return ""
+    text = f", {role} {site.element_index}"
+    if site.element_count > 1:
+        text += f" x{site.element_count}"
+    return text
 
 
 def xrefs_summary_to_ansi_rows(xrefs: list) -> list[str]:
@@ -507,8 +523,11 @@ def make_disasm_panel(
     return Panel(content, title=f"func {func.index}", border_style="blue")
 
 
-def _fmt_instr_ansi(instr, src_comment: Optional[str] = None) -> str:
-    """An instruction as an ANSI string for show_list()."""
+def _fmt_instr_ansi(instr, src_comment: Optional[str] = None,
+                    previewer: Optional[LiteralPreview] = None) -> str:
+    """An instruction as an ANSI string for show_list(). With a `previewer`, a
+    New{Array,Object}WithBuffer[Long] instruction gets the literal it builds after
+    its operands."""
     ops = []
     for op in instr.operands:
         t = op.type
@@ -534,6 +553,10 @@ def _fmt_instr_ansi(instr, src_comment: Optional[str] = None) -> str:
         else:
             ops.append(str(op.u32))
     ops_str = ", ".join(ops)
+    if previewer is not None:
+        pv = previewer.render(instr)
+        if pv:
+            ops_str += f"   {pv}"
     cmt = f"  \x1b[2m\x1b[32m; {src_comment}\x1b[0m" if src_comment else ""
     return (
         f"  \x1b[2m{instr.offset:#06x}\x1b[0m  "
@@ -546,6 +569,7 @@ def disasm_to_ansi_rows(
     func,
     instrs: list,
     src_locs: Optional[list] = None,
+    previewer: Optional[LiteralPreview] = None,
 ) -> list[str]:
     """ANSI rows of the main disasm view: a header, then one row per
     instruction (`; L<line>:<col>` where the source line changes) with the jump
@@ -562,7 +586,7 @@ def disasm_to_ansi_rows(
     rows: list[str] = [hdr, ""]
 
     for instr, src_comment in _source_annotations(instrs, src_locs):
-        rows.append(_fmt_instr_ansi(instr, src_comment))
+        rows.append(_fmt_instr_ansi(instr, src_comment, previewer))
         if instr.mnemonic == "SwitchImm" and instr.switch_targets:
             min_val = instr.operands[3].u32
             default_target = instr.offset + instr.operands[2].i32

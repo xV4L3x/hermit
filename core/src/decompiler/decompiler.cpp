@@ -2,6 +2,7 @@
 // HBCFile::decompile() formatter. Uses only HBCFile's public API.
 
 #include "decompiler/decompiler.h"
+#include "util/slp.h"
 
 #include <algorithm>
 #include <cctype>
@@ -82,79 +83,30 @@ static std::string formatDouble(double d) {
     return oss.str();
 }
 
-// SerializedLiteral (SLP) decoding of the array/object literal buffers
-// (Python twin: cli/literals.py). Typed RLE runs: a tag byte
-// [ext:1][tag:3][len:4] introduces `len` consecutive elements of the same tag
-// (up to 4095 with the extension byte, else 15), each followed by its value
-// bytes (little-endian, width fixed by the tag).
+// SerializedLiteral (SLP) rendering of the array/object literal buffers. The
+// buffer decoding itself is in util/slp.h.
 namespace {
-
-enum class SLPTag : uint8_t {
-    Null = 0, True = 1, False = 2, Number = 3,
-    LongString = 4, ShortString = 5, ByteString = 6, Integer = 7,
-};
 
 // nullopt on a truncated or malformed buffer: the caller falls back to an
 // untyped placeholder instead of failing.
 std::optional<std::vector<std::string>> decodeSLPElements(
     const std::string& buf, uint32_t start, uint32_t count, const DecompileContext& ctx)
 {
+    auto elems = decodeSLP(buf, start, count);
+    if (!elems) return std::nullopt;
+
     std::vector<std::string> out;
-    out.reserve(count);
-    const auto* data = reinterpret_cast<const uint8_t*>(buf.data());
-    const size_t n = buf.size();
-    size_t pos = start;
-
-    while (out.size() < count) {
-        if (pos >= n) return std::nullopt;
-        uint8_t tagByte = data[pos];
-        auto tag = static_cast<SLPTag>((tagByte >> 4) & 0x7);
-        uint32_t runLen;
-        if (tagByte >> 7) {
-            if (pos + 1 >= n) return std::nullopt;
-            runLen = (static_cast<uint32_t>(tagByte & 0x0F) << 8) | data[pos + 1];
-            pos += 2;
-        } else {
-            runLen = tagByte & 0x0F;
-            pos += 1;
-        }
-
-        uint32_t width;
-        switch (tag) {
-            case SLPTag::Null: case SLPTag::True: case SLPTag::False: width = 0; break;
-            case SLPTag::Number:                                      width = 8; break;
-            case SLPTag::LongString: case SLPTag::Integer:            width = 4; break;
-            case SLPTag::ShortString:                                 width = 2; break;
-            case SLPTag::ByteString:                                  width = 1; break;
-            default: return std::nullopt;
-        }
-
-        for (uint32_t i = 0; i < runLen && out.size() < count; i++) {
-            if (pos + width > n) return std::nullopt;
-            switch (tag) {
-                case SLPTag::Null:  out.push_back("null");  break;
-                case SLPTag::True:  out.push_back("true");  break;
-                case SLPTag::False: out.push_back("false"); break;
-                case SLPTag::Number: {
-                    double d;
-                    std::memcpy(&d, data + pos, 8);
-                    out.push_back(formatDouble(d));
-                    break;
-                }
-                case SLPTag::Integer: {
-                    int32_t v;
-                    std::memcpy(&v, data + pos, 4);
-                    out.push_back(std::to_string(v));
-                    break;
-                }
-                case SLPTag::LongString: case SLPTag::ShortString: case SLPTag::ByteString: {
-                    uint32_t idx = 0;
-                    std::memcpy(&idx, data + pos, width);
-                    out.push_back(jsStringLiteral(strAt(ctx, idx)));
-                    break;
-                }
-            }
-            pos += width;
+    out.reserve(elems->size());
+    for (const SLPElement& e : *elems) {
+        switch (e.tag) {
+            case SLPTag::Null:    out.push_back("null");  break;
+            case SLPTag::True:    out.push_back("true");  break;
+            case SLPTag::False:   out.push_back("false"); break;
+            case SLPTag::Number:  out.push_back(formatDouble(e.number)); break;
+            case SLPTag::Integer: out.push_back(std::to_string(e.integer)); break;
+            case SLPTag::LongString: case SLPTag::ShortString: case SLPTag::ByteString:
+                out.push_back(jsStringLiteral(strAt(ctx, e.stringIndex)));
+                break;
         }
     }
     return out;

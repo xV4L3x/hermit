@@ -366,3 +366,138 @@ TEST_CASE("recover_modules: returns empty on non-Metro file", "[xrefs]") {
     auto mods = f.recover_modules();
     CHECK(mods.empty());
 }
+
+// =============================================================================
+// Literal buffer references (xrefs_literals.hbc, from seeder/samples/xrefs_literals.js)
+// =============================================================================
+// Every string below is referenced from an array/object literal buffer. Sites
+// point at the New{Array,Object}WithBuffer instruction. func 0 is the global
+// function, 1 = first(), 2 = second() (same array literal: one shared buffer).
+static const std::string XREFS_LITERALS = std::string(HBC_CORPUS_DIR) + "/xrefs_literals.hbc";
+
+static std::vector<hbc::XRefSite> sitesOfKind(const hbc::StringXRef& xr, hbc::XRefKind kind) {
+    std::vector<hbc::XRefSite> out;
+    for (const auto& s : xr.sites)
+        if (s.kind == kind) out.push_back(s);
+    return out;
+}
+
+TEST_CASE("string_xrefs: strings only inside an array literal are found", "[xrefs][literal-xrefs]") {
+    auto f  = hbc::HBCFile::open(XREFS_LITERALS);
+    auto xs = f.string_xrefs();
+
+    // The 3-string PoC array ["loca", "lho", "st"]: no operand references them.
+    const char* parts[] = {"loca", "lho", "st"};
+    for (uint32_t i = 0; i < 3; ++i) {
+        const auto* xr = findXRef(xs, parts[i]);
+        INFO(parts[i]);
+        REQUIRE(xr != nullptr);
+        REQUIRE(xr->sites.size() == 1);
+        const auto& s = xr->sites[0];
+        CHECK(s.kind == hbc::XRefKind::ArrayElement);
+        CHECK(s.functionIndex == 0);
+        CHECK(s.mnemonic == "NewArrayWithBuffer");
+        CHECK(s.elementIndex == i);
+        CHECK(s.elementCount == 1);
+    }
+}
+
+TEST_CASE("string_xrefs: a string repeated in one literal is one site with its element count",
+          "[xrefs][literal-xrefs]") {
+    auto f  = hbc::HBCFile::open(XREFS_LITERALS);
+    auto xs = f.string_xrefs();
+    const auto* dup = findXRef(xs, "dup");
+    REQUIRE(dup != nullptr);
+    auto lits = sitesOfKind(*dup, hbc::XRefKind::ArrayElement);
+    REQUIRE(lits.size() == 1);
+    CHECK(lits[0].elementIndex == 0);
+    CHECK(lits[0].elementCount == 2);
+
+    const auto* other = findXRef(xs, "other");
+    REQUIRE(other != nullptr);
+    REQUIRE(other->sites.size() == 1);
+    CHECK(other->sites[0].elementIndex == 2);
+    // Same instruction as "dup"'s literal site.
+    CHECK(other->sites[0].instructionOffset == lits[0].instructionOffset);
+}
+
+TEST_CASE("string_xrefs: strings inside a mixed literal keep their element positions",
+          "[xrefs][literal-xrefs]") {
+    auto f  = hbc::HBCFile::open(XREFS_LITERALS);
+    auto xs = f.string_xrefs();
+    // ["mx1", 7, "mx2", true, null, "mx3"]
+    const std::pair<const char*, uint32_t> expect[] = {{"mx1", 0}, {"mx2", 2}, {"mx3", 5}};
+    for (const auto& [value, idx] : expect) {
+        const auto* xr = findXRef(xs, value);
+        INFO(value);
+        REQUIRE(xr != nullptr);
+        REQUIRE(xr->sites.size() == 1);
+        CHECK(xr->sites[0].elementIndex == idx);
+    }
+}
+
+TEST_CASE("string_xrefs: object literal keys and values are told apart", "[xrefs][literal-xrefs]") {
+    auto f  = hbc::HBCFile::open(XREFS_LITERALS);
+    auto xs = f.string_xrefs();
+    // { kx: "vx", ky: "vy", kz: "vz" }
+    const char* keys[] = {"kx", "ky", "kz"};
+    const char* vals[] = {"vx", "vy", "vz"};
+    for (uint32_t i = 0; i < 3; ++i) {
+        const auto* k = findXRef(xs, keys[i]);
+        const auto* v = findXRef(xs, vals[i]);
+        INFO(keys[i]);
+        REQUIRE(k != nullptr);
+        REQUIRE(v != nullptr);
+        auto ks = sitesOfKind(*k, hbc::XRefKind::ObjectKey);
+        auto vs = sitesOfKind(*v, hbc::XRefKind::ObjectValue);
+        REQUIRE(ks.size() == 1);
+        REQUIRE(vs.size() == 1);
+        CHECK(ks[0].mnemonic == "NewObjectWithBuffer");
+        CHECK(ks[0].elementIndex == i);
+        CHECK(vs[0].elementIndex == i);
+        CHECK(ks[0].instructionOffset == vs[0].instructionOffset);
+        // keys are not values and vice versa
+        CHECK(sitesOfKind(*k, hbc::XRefKind::ObjectValue).empty());
+        CHECK(sitesOfKind(*v, hbc::XRefKind::ObjectKey).empty());
+    }
+}
+
+TEST_CASE("string_xrefs: identical literals in two functions give one site each",
+          "[xrefs][literal-xrefs]") {
+    auto f  = hbc::HBCFile::open(XREFS_LITERALS);
+    auto xs = f.string_xrefs();
+    // "alpha" is in first() and second() (one shared buffer) and nowhere else.
+    const auto* alpha = findXRef(xs, "alpha");
+    REQUIRE(alpha != nullptr);
+    REQUIRE(alpha->sites.size() == 2);
+    CHECK(alpha->sites[0].functionIndex == 1);
+    CHECK(alpha->sites[1].functionIndex == 2);
+    for (const auto& s : alpha->sites) {
+        CHECK(s.kind == hbc::XRefKind::ArrayElement);
+        CHECK(s.elementIndex == 0);
+    }
+}
+
+TEST_CASE("string_xrefs: a string used as an operand and in a literal reports both",
+          "[xrefs][literal-xrefs]") {
+    auto f  = hbc::HBCFile::open(XREFS_LITERALS);
+    auto xs = f.string_xrefs();
+    // "beta": LoadConstString in the global function + element 1 of both arrays.
+    const auto* beta = findXRef(xs, "beta");
+    REQUIRE(beta != nullptr);
+    auto ops  = sitesOfKind(*beta, hbc::XRefKind::Operand);
+    auto lits = sitesOfKind(*beta, hbc::XRefKind::ArrayElement);
+    REQUIRE(ops.size() == 1);
+    CHECK(ops[0].mnemonic == "LoadConstString");
+    CHECK(ops[0].elementCount == 1);
+    REQUIRE(lits.size() == 2);
+    CHECK(lits[0].elementIndex == 1);
+}
+
+TEST_CASE("string_xrefs: a file without literal buffers reports only operand sites",
+          "[xrefs][literal-xrefs]") {
+    auto f = hbc::HBCFile::open(HELLO);
+    for (const auto& x : f.string_xrefs())
+        for (const auto& s : x.sites)
+            CHECK(s.kind == hbc::XRefKind::Operand);
+}

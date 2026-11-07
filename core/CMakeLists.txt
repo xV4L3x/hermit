@@ -17,6 +17,7 @@ add_library(hbc STATIC
     src/patcher/patcher.cpp
     src/patcher/module.cpp
     src/util/sha1.cpp
+    src/util/slp.cpp
 )
 
 target_include_directories(hbc

@@ -1,7 +1,11 @@
 #include "analysis/analysis.h"
 #include "hbc/hbc.h"
+#include "util/slp.h"
 #include <algorithm>
 #include <limits>
+#include <map>
+#include <tuple>
+#include <unordered_map>
 #include <unordered_set>
 
 namespace hbc {
@@ -22,16 +26,110 @@ bool isCreateClosure(const std::string& mnemonic) {
 
 } // namespace
 
-// Reference sites of every StringID operand, grouped by string. Only strings
-// with at least one reference are returned, in index order.
+namespace {
+
+// New{Array,Object}WithBuffer[Long] operands (v94-96): dst, sizeHint, count,
+// then one buffer offset (array) or two (object: key buffer, value buffer).
+// An object's bufferIdx is the value buffer, the editable one. False for any
+// other instruction and for a truncated operand list.
+bool literalSiteFrom(const FunctionInfo& func, const Instruction& instr, LiteralSite& site) {
+    const bool isArr = instr.mnemonic == "NewArrayWithBuffer" ||
+                       instr.mnemonic == "NewArrayWithBufferLong";
+    const bool isObj = instr.mnemonic == "NewObjectWithBuffer" ||
+                       instr.mnemonic == "NewObjectWithBufferLong";
+    if (!isArr && !isObj) return false;
+
+    site = LiteralSite{};
+    site.functionIndex     = func.index;
+    site.instructionOffset = instr.offset;
+    site.mnemonic          = instr.mnemonic;
+    site.isObject          = isObj;
+
+    if (isArr) {
+        if (instr.operands.size() < 4) return false;  // truncated
+        site.count        = instr.operands[2].u32;
+        site.bufferIdx    = instr.operands[3].u32;
+        site.keyBufferIdx = 0;
+    } else {
+        if (instr.operands.size() < 5) return false;
+        site.count        = instr.operands[2].u32;
+        site.keyBufferIdx = instr.operands[3].u32;
+        site.bufferIdx    = instr.operands[4].u32;
+    }
+    return true;
+}
+
+// The strings referenced by one literal buffer segment: for each distinct
+// string, its first element and how many elements hold it.
+struct LiteralStringHit {
+    uint32_t stringIndex;
+    uint32_t firstElement;
+    uint32_t elementCount;
+};
+
+std::vector<LiteralStringHit> stringsInLiteral(
+    const std::string& buffer, uint32_t offset, uint32_t count, size_t stringCount)
+{
+    std::vector<LiteralStringHit> hits;
+    auto elems = decodeSLP(buffer, offset, count);
+    if (!elems) return hits;  // truncated or wrong offset: no reference reported
+    std::unordered_map<uint32_t, size_t> slot;  // stringIndex -> position in hits
+    for (uint32_t i = 0; i < elems->size(); ++i) {
+        const SLPElement& e = (*elems)[i];
+        if (!isSLPStringTag(e.tag) || e.stringIndex >= stringCount) continue;
+        auto [it, isNew] = slot.try_emplace(e.stringIndex, hits.size());
+        if (isNew) hits.push_back({e.stringIndex, i, 1});
+        else ++hits[it->second].elementCount;
+    }
+    return hits;
+}
+
+} // namespace
+
+// Reference sites of every string: StringID operands, and string elements of
+// the array/object literal buffers a New*WithBuffer instruction points at.
+// Grouped by string; only strings with at least one reference are returned, in
+// index order. Within a string, sites follow the instruction order.
 std::vector<StringXRef> HBCFile::string_xrefs() const {
     const auto& strs = strings();
     std::vector<std::vector<XRefSite>> sitesByString(strs.size());
+
+    // Sites commonly share a buffer segment (identical literals in several
+    // functions): decode each (buffer, offset, count) once.
+    using SegmentKey = std::tuple<const std::string*, uint32_t, uint32_t>;
+    std::map<SegmentKey, std::vector<LiteralStringHit>> segments;
+    auto hitsOf = [&](const std::string& buffer, uint32_t offset, uint32_t count)
+        -> const std::vector<LiteralStringHit>& {
+        auto key = SegmentKey{&buffer, offset, count};
+        auto it = segments.find(key);
+        if (it == segments.end())
+            it = segments.emplace(key, stringsInLiteral(buffer, offset, count, strs.size())).first;
+        return it->second;
+    };
+    auto addLiteralSites = [&](const LiteralSite& lit, XRefKind kind,
+                               const std::vector<LiteralStringHit>& hits) {
+        for (const auto& h : hits)
+            sitesByString[h.stringIndex].push_back(
+                {lit.functionIndex, lit.instructionOffset, lit.mnemonic,
+                 kind, h.firstElement, h.elementCount});
+    };
 
     forEachInstruction(*this, [&](const FunctionInfo& func, const Instruction& instr) {
         for (const auto& op : instr.operands)
             if (op.type == Operand::Type::StringID && op.u32 < strs.size())
                 sitesByString[op.u32].push_back({func.index, instr.offset, instr.mnemonic});
+
+        LiteralSite lit;
+        if (!literalSiteFrom(func, instr, lit)) return;
+        if (lit.isObject) {
+            addLiteralSites(lit, XRefKind::ObjectKey,
+                            hitsOf(obj_key_buffer(), lit.keyBufferIdx, lit.count));
+            addLiteralSites(lit, XRefKind::ObjectValue,
+                            hitsOf(obj_value_buffer(), lit.bufferIdx, lit.count));
+        } else {
+            addLiteralSites(lit, XRefKind::ArrayElement,
+                            hitsOf(array_buffer(), lit.bufferIdx, lit.count));
+        }
     });
 
     std::vector<StringXRef> result;
@@ -137,37 +235,12 @@ std::vector<ModuleInfo> computeModules(const HBCFile& self) {
     return result;
 }
 
-// New{Array,Object}WithBuffer[Long] sites. Operands (v94-96): dst, sizeHint,
-// count, then one buffer index (array) or two (object: key buffer, value
-// buffer). An object's bufferIdx is the value buffer, the editable one.
+// New{Array,Object}WithBuffer[Long] sites (see literalSiteFrom).
 std::vector<LiteralSite> computeLiteralSites(const HBCFile& self) {
     std::vector<LiteralSite> result;
-
     forEachInstruction(self, [&](const FunctionInfo& func, const Instruction& instr) {
-        const bool isArr = instr.mnemonic == "NewArrayWithBuffer" ||
-                           instr.mnemonic == "NewArrayWithBufferLong";
-        const bool isObj = instr.mnemonic == "NewObjectWithBuffer" ||
-                           instr.mnemonic == "NewObjectWithBufferLong";
-        if (!isArr && !isObj) return;
-
-        LiteralSite site{};
-        site.functionIndex     = func.index;
-        site.instructionOffset = instr.offset;
-        site.mnemonic          = instr.mnemonic;
-        site.isObject          = isObj;
-
-        if (isArr) {
-            if (instr.operands.size() < 4) return;  // truncated
-            site.count        = instr.operands[2].u32;
-            site.bufferIdx    = instr.operands[3].u32;
-            site.keyBufferIdx = 0;
-        } else {
-            if (instr.operands.size() < 5) return;
-            site.count        = instr.operands[2].u32;
-            site.keyBufferIdx = instr.operands[3].u32;
-            site.bufferIdx    = instr.operands[4].u32;
-        }
-        result.push_back(std::move(site));
+        LiteralSite site;
+        if (literalSiteFrom(func, instr, site)) result.push_back(std::move(site));
     });
     return result;
 }

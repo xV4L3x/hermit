@@ -169,10 +169,24 @@ struct CFGData {
 // XREFs and call graph
 // =============================================================================
 
+// How an instruction refers to a string.
+enum class XRefKind : uint8_t {
+    Operand,       // a StringID operand of the instruction itself
+    ArrayElement,  // an element of the array literal buffer built by NewArrayWithBuffer*
+    ObjectKey,     // a key in the object key buffer built by NewObjectWithBuffer*
+    ObjectValue,   // a value in the object value buffer built by NewObjectWithBuffer*
+};
+
 struct XRefSite {
     uint32_t    functionIndex;
     uint32_t    instructionOffset;  // in the function's bytecode
-    std::string mnemonic;           // e.g. "LoadConstString", "GetByIdShort"
+    std::string mnemonic;           // e.g. "LoadConstString", "GetByIdShort", "NewArrayWithBuffer"
+    // Literal references only (kind != Operand): the string is an element of the
+    // literal buffer the instruction points at, not an operand. One site per
+    // instruction, string and buffer, however many elements hold the string.
+    XRefKind    kind           = XRefKind::Operand;
+    uint32_t    elementIndex   = 0;  // first element holding the string (0 for Operand)
+    uint32_t    elementCount   = 1;  // how many elements of this literal hold it
 };
 
 // Reference sites of one string. string_xrefs() only returns strings with at least one site.

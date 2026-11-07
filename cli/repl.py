@@ -14,6 +14,7 @@ from rich.syntax import Syntax
 import _libhbc
 from cli.project import HermitProject
 from cli import display
+from cli.literal_preview import LiteralPreview
 from cli import cfg_dot
 from cli.viewer import show_list
 
@@ -315,7 +316,7 @@ class HermitREPL:
         src_locs    = proj.hbc.source_locations(func.index) if func.hasDebugInfo else []
         src_files   = proj.hbc.source_files()
 
-        rows     = display.disasm_to_ansi_rows(func, instrs, src_locs)
+        rows     = display.disasm_to_ansi_rows(func, instrs, src_locs, LiteralPreview(proj.hbc))
         alt_rows = display.debug_source_table_rows(func, src_locs, src_files)
         title    = f"disasm  [{func.index}] {func.name}  ({len(instrs)} instrs)"
         alt_title = f"src table  [{func.index}] {func.name}"
@@ -365,7 +366,7 @@ class HermitREPL:
         cfg_dot.show_cfg(cfg_data, func, force_compact=force_compact)
 
     def cmd_xrefs(self, args: list[str]) -> None:
-        """xrefs [string:<value|N>] [func:<N|name> [--callers] [--callees]]"""
+        """xrefs [string:<value|N>] [func:<N|name> [--callers] [--callees]]  (string refs include array/object literal elements)"""
         proj = self._require_project()
 
         if not args:

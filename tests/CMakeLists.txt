@@ -20,6 +20,7 @@ add_executable(hermit_tests
     unit/disassembler/test_disassembler.cpp
     unit/cfg/test_cfg.cpp
     unit/xrefs/test_xrefs.cpp
+    unit/slp/test_slp.cpp
     unit/cjs-modules/test_cjs_modules.cpp
     unit/decompiler/test_decompiler.cpp
     unit/patcher/test_encoder.cpp
@@ -29,7 +30,7 @@ add_executable(hermit_tests
 )
 
 target_link_libraries(hermit_tests PRIVATE hbc Catch2::Catch2WithMain)
-target_include_directories(hermit_tests PRIVATE unit)
+target_include_directories(hermit_tests PRIVATE unit ${CMAKE_SOURCE_DIR}/core/src)
 
 # Inject corpus path so tests can find hello.hbc regardless of CWD
 target_compile_definitions(hermit_tests PRIVATE
