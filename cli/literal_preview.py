@@ -1,16 +1,22 @@
-"""One-line preview of the array/object literal a New{Array,Object}WithBuffer[Long]
-instruction builds, for the disassembly view.
+"""One-line preview of the constant an instruction loads from a table, for the
+disassembly view: the array/object literal of New{Array,Object}WithBuffer[Long],
+or the value of LoadConstBigInt[LongIndex].
 
     ["loca", "lho", "st"] [array][4]
     {kx: "vx", ky: "vy", kz: "vz"} [object][0, 0]
+    123456789012345678901234567890n [bigint][10]
 
 The id inside the second bracket is the byte offset in the literal buffer(s):
 the operand of the instruction, so two instructions with the same id build their
 literal from the same buffer segment. An object shows the key buffer offset, then
 the value buffer offset.
 
-The preview is cut at `MAX_BODY` characters: elements that do not fit are replaced
-by `… +N`. Everything here is display only; decoding is `cli.literals.decode_slp`.
+The id of a BigInt is its index in the BigInt Table.
+
+A literal preview is cut at `MAX_BODY` characters: elements that do not fit are
+replaced by `… +N`. A BigInt of more than `MAX_DIGITS` digits shows its first digits
+and `… +N digits` (no trailing `n`, the value is not complete). Everything here is
+display only; decoding is `cli.literals.decode_slp` and `HBCFile.bigints()`.
 """
 
 from __future__ import annotations
@@ -21,7 +27,9 @@ from cli.literals import SLPError, SLPTag, decode_slp
 
 MAX_BODY = 40      # characters of the preview, brackets and ellipsis included
 MAX_STRING = 12    # characters of one string element before it is cut
+MAX_DIGITS = 24    # digits of a BigInt before it is cut
 
+_BIGINT = ("LoadConstBigInt", "LoadConstBigIntLongIndex")
 _ARRAY = ("NewArrayWithBuffer", "NewArrayWithBufferLong")
 _OBJECT = ("NewObjectWithBuffer", "NewObjectWithBufferLong")
 _STRING_TAGS = (SLPTag.LONG_STRING, SLPTag.SHORT_STRING, SLPTag.BYTE_STRING)
@@ -31,7 +39,7 @@ _GREEN, _YELLOW, _DIM, _RESET = "\x1b[32m", "\x1b[33m", "\x1b[2m", "\x1b[0m"
 
 
 def is_literal_instruction(instr) -> bool:
-    return instr.mnemonic in _ARRAY or instr.mnemonic in _OBJECT
+    return instr.mnemonic in _ARRAY or instr.mnemonic in _OBJECT or instr.mnemonic in _BIGINT
 
 
 def _escape(s: str) -> str:
@@ -102,11 +110,30 @@ class LiteralPreview:
             body += f", … +{hidden}"
         return open_ + body + close
 
+    def _render_bigint(self, instr) -> str | None:
+        ops = instr.operands
+        if len(ops) < 2:
+            return None
+        idx = ops[1].u32
+        bigints = self._hbc.bigints()
+        tag = f"{_DIM}[bigint][{idx}]{_RESET}"
+        if idx >= len(bigints) or not bigints[idx].ok:
+            return f"{_DIM}<unreadable bigint>{_RESET} {tag}"
+        dec = bigints[idx].decimal
+        sign, digits = ("-", dec[1:]) if dec.startswith("-") else ("", dec)
+        if len(digits) > MAX_DIGITS:
+            body = f"{sign}{digits[:MAX_DIGITS]}… +{len(digits) - MAX_DIGITS} digits"
+        else:
+            body = f"{dec}n"
+        return f"{_YELLOW}{body}{_RESET} {tag}"
+
     def render(self, instr) -> str | None:
-        """ANSI text `<preview> [array][id]` / `<preview> [object][keyId, valueId]`,
-        or None if `instr` is not a literal instruction."""
+        """ANSI text `<preview> [array][id]` / `<preview> [object][keyId, valueId]` /
+        `<value>n [bigint][id]`, or None if `instr` loads no such constant."""
         if not is_literal_instruction(instr):
             return None
+        if instr.mnemonic in _BIGINT:
+            return self._render_bigint(instr)
         ops = instr.operands
         is_obj = instr.mnemonic in _OBJECT
         if len(ops) < (5 if is_obj else 4):

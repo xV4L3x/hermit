@@ -145,8 +145,8 @@ analysis and its consequences for patching.
 | `stringCount` | 0x34 | 4 | `u32` | total string count (`Identifier` + plain `String`) |
 | `overflowStringCount` | 0x38 | 4 | `u32` | number of strings stored in the Overflow String Table: those of length ≥ 255 code units or with an offset ≥ 2²³ in String Storage (§5.3–5.4) |
 | `stringStorageSize` | 0x3C | 4 | `u32` | bytes of the raw string blob (§5.5) |
-| `bigIntCount` | 0x40 | 4 | `u32` | **NOT YET EXPLORED**, see §7 |
-| `bigIntStorageSize` | 0x44 | 4 | `u32` | ″ |
+| `bigIntCount` | 0x40 | 4 | `u32` | number of BigInt Table entries (§7) |
+| `bigIntStorageSize` | 0x44 | 4 | `u32` | bytes of the BigInt storage (§7) |
 | `regExpCount` | 0x48 | 4 | `u32` | **partially explored**, see §8 |
 | `regExpStorageSize` | 0x4C | 4 | `u32` | ″ |
 | `arrayBufferSize` | 0x50 | 4 | `u32` | array-literal serialized buffer (§6) |
@@ -476,29 +476,42 @@ string, however many elements hold it).
 
 ---
 
-## 7. BigInt Table and Storage — **NOT YET EXPLORED**
+## 7. BigInt Table and Storage
 
 | Field (`BigIntTableEntry`, 8 B × `bigIntCount`) | Notes |
 |---|---|
 | `offset` (`u32`) | relative to the start of BigInt storage |
 | `length` (`u32`) | in bytes |
 
-hermit's parser sizes this section (for correct round-trip and
-re-serialization) but never decodes an individual entry's bytes into a
-value. `header.bigIntCount` has been **0 in every file observed so far**,
-including `ridemovi.hbc` — a real, large production bundle — so there is
-currently no real sample from which to reverse the on-disk encoding of an
-arbitrary-precision BigInt literal (the leading hypothesis is a
-sign+magnitude byte encoding, unverified). The decompiler already flags
-this gap honestly rather than guessing: a `LoadConstBigInt[LongIndex]`
-instruction is rendered as `r0 = 0n; /* BigInt table #N, not resolved */` —
-visibly wrong but never silently passed off as the real value.
+The storage holds the entries' bytes back to back. An entry is the value as
+**little-endian two's complement with the redundant sign-extension bytes dropped**
+(`ParsedBigInt::getBytes()` / `dropExtraSignBits`, in
+`include/hermes/Support/BigIntSupport.h` and `lib/Support/BigIntSupport.cpp`;
+the runtime reads it with `BigIntPrimitive::fromBytes`). So:
 
-**To unblock:** produce a `.hbc` file that actually contains a BigInt
-literal (e.g. `123456789012345678901234567890n` in a seeder sample compiled
-with `hermes -emit-binary`) and inspect the resulting `bigIntCount` and
-storage bytes before writing a decoder. See bonus item **B20** in
-[`../phases/phase-bonus/README.md`](../phases/phase-bonus/README.md).
+| Value | Entry bytes |
+|---|---|
+| `0n` | empty (`length` 0) |
+| `1n`, `127n` | `01`, `7f` |
+| `128n` | `80 00` (the sign byte is kept, `80` alone would be -128) |
+| `255n`, `256n` | `ff 00`, `00 01` |
+| `-1n` | `ff` |
+| `2n ** 64n` | `00` ×8, `01` |
+
+Entries are unique by their bytes: a literal used twice has one entry. The compiler
+never stores a negative source literal: `-5n` is the entry `5` followed by a runtime
+negate, at `-O0` and at `-O` alike. A decoder must still read the sign (the format
+allows it). When `bigIntCount` is 0 there is no BigInt Table section and no storage.
+
+`LoadConstBigInt dst, id` (`UInt16` id) and `LoadConstBigIntLongIndex dst, id`
+(`UInt32` id) index this table. hermit decodes it with `HBCFile::bigints()` (value as
+signed decimal text, `ok` false for an entry outside the storage); the decompiler prints
+`r1 = 123456789012345678901234567890n;` and `disasm` shows
+`123…n [bigint][10]`. The same table was read identically from HBC 94, 95 and 96
+compilers, optimized or not, and checked against `hermes -b -dump-bytecode`
+(`Global BigInt Table:`, decimal cut at 16 digits), the VM output of
+`seeder/samples/bigint.js`, and Python's `int.from_bytes(..., signed=True)`.
+No real bundle in the corpus (`ridemovi.hbc`, `hermitvault.hbc`) has a BigInt.
 
 ---
 
@@ -1127,7 +1140,6 @@ encoding order; a trailing `*` marks a String Table index (§1).
 | Item | Section here | Bonus entry | Blocking step |
 |---|---|---|---|
 | Identifier hash algorithm | §5.2 | B3 | recompute candidate hash (Jenkins family) over a real corpus, compare byte-for-byte |
-| BigInt literal encoding | §7 | B20 | produce a sample with `bigIntCount > 0` |
 | RegExp precompiled bytecode | §8 | B20 | out of scope (regex *source* already recovered via String Table, no decompilation need) |
 | CJS Module Table entry layout | §9.2 | B16 | **resolved** — confirmed from source + compiled samples; a decoder is not yet wired into hermit's parser |
 | `segmentID` / multi-segment layout | §9.3 | B16 | **resolved** — confirmed to change nothing else in the layout |

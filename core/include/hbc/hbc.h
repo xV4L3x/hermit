@@ -254,6 +254,21 @@ struct CJSModuleInfo {
                                        // the module's source file path. Empty otherwise.
 };
 
+// An entry of the BigInt Table (header.bigIntCount). The value is the bytes of the
+// entry read as little-endian two's complement (redundant sign bytes dropped: 0n is
+// empty, 255n is `ff 00`, -1n is `ff`). `ok` is false if the entry does not fit in the
+// BigInt storage; then `error` says why and the value fields are empty.
+struct BigIntInfo {
+    uint32_t             index;
+    uint32_t             offset;      // in the BigInt storage
+    uint32_t             length;      // in bytes
+    std::vector<uint8_t> bytes;
+    bool                 isNegative;
+    std::string          decimal;     // signed decimal text, e.g. "-5"; "0" for an empty entry
+    bool                 ok;
+    std::string          error;
+};
+
 // Maps a bytecode address to a source position (from the debug info section).
 struct SourceLocation {
     uint32_t address;  // from the start of the function's bytecode
@@ -344,6 +359,8 @@ public:
     std::vector<CallSite>            call_graph()                   const;
     std::vector<ModuleInfo>          recover_modules()              const;
     std::vector<CJSModuleInfo>       cjs_modules()                  const;
+    // The BigInt Table decoded, one entry per header.bigIntCount (empty if none).
+    const std::vector<BigIntInfo>&   bigints()                      const;
     std::vector<std::string>         source_files()                 const;
     std::vector<SourceLocation>      source_locations(uint32_t functionIndex) const;
     std::string                      decompile(uint32_t functionIndex) const;

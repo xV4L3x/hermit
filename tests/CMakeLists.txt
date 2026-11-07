@@ -21,6 +21,7 @@ add_executable(hermit_tests
     unit/cfg/test_cfg.cpp
     unit/xrefs/test_xrefs.cpp
     unit/slp/test_slp.cpp
+    unit/bigint/test_bigint.cpp
     unit/cjs-modules/test_cjs_modules.cpp
     unit/decompiler/test_decompiler.cpp
     unit/patcher/test_encoder.cpp

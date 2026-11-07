@@ -211,8 +211,13 @@ std::string emitExpression(const Instruction& instr, const DecompileContext& ctx
     if (mn == "LoadConstString" || mn == "LoadConstStringLongIndex") {
         if (op.size() >= 2) return reg(0) + " = " + jsStringLiteral(strAt(ctx, op[1].u32)) + ";";
     }
-    if (mn == "LoadConstBigInt" || mn == "LoadConstBigIntLongIndex")
-        return reg(0) + " = 0n; /* BigInt table #" + std::to_string(op.size() >= 2 ? op[1].u32 : 0) + ", not resolved */";
+    if (mn == "LoadConstBigInt" || mn == "LoadConstBigIntLongIndex") {
+        const uint32_t id = op.size() >= 2 ? op[1].u32 : 0;
+        if (id < ctx.bigints.size() && ctx.bigints[id].ok)
+            return reg(0) + " = " + ctx.bigints[id].decimal + "n;";
+        // An id outside the table or an unreadable entry: keep a visible placeholder.
+        return reg(0) + " = 0n; /* BigInt table #" + std::to_string(id) + ", not resolved */";
+    }
     if (mn == "LoadConstEmpty")     return reg(0) + " = undefined; /* <empty> */";
     if (mn == "LoadConstUndefined") return reg(0) + " = undefined;";
     if (mn == "LoadConstNull")      return reg(0) + " = null;";
@@ -858,7 +863,7 @@ std::string HBCFile::decompile(uint32_t functionIndex) const {
     }
 
     DecompileContext ctx{regNames, funcs, strings(), envSlotNames, ownEnvReg,
-                         array_buffer(), obj_key_buffer(), obj_value_buffer()};
+                         array_buffer(), obj_key_buffer(), obj_value_buffer(), bigints()};
 
     std::vector<SourceLocation> srcLocs;
     if (fi.hasDebugInfo) srcLocs = source_locations(functionIndex);

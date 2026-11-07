@@ -267,6 +267,7 @@ PYBIND11_MODULE(_libhbc, m) {
         .def("call_graph",         &hbc::HBCFile::call_graph)
         .def("recover_modules",    &hbc::HBCFile::recover_modules)
         .def("cjs_modules",        &hbc::HBCFile::cjs_modules)
+        .def("bigints",            &hbc::HBCFile::bigints)
         .def("source_files", [](const hbc::HBCFile& self) { return decodeUtf8List(self.source_files()); })
         .def("source_locations", &hbc::HBCFile::source_locations)
         .def("decompile",        &hbc::HBCFile::decompile)
@@ -393,6 +394,19 @@ PYBIND11_MODULE(_libhbc, m) {
 
     // CJS Module Table (native `hermes -commonjs` mode, never present in a
     // Metro-bundled bundle -- see ModuleInfo/recover_modules() for that case).
+    py::class_<hbc::BigIntInfo>(m, "BigIntInfo")
+        .def_readonly("index",       &hbc::BigIntInfo::index)
+        .def_readonly("offset",      &hbc::BigIntInfo::offset)
+        .def_readonly("length",      &hbc::BigIntInfo::length)
+        .def_property_readonly("bytes", [](const hbc::BigIntInfo& b) {
+            return py::bytes(reinterpret_cast<const char*>(b.bytes.data()), b.bytes.size());
+        })
+        .def_readonly("is_negative", &hbc::BigIntInfo::isNegative)
+        .def_readonly("decimal",     &hbc::BigIntInfo::decimal)
+        .def_readonly("ok",          &hbc::BigIntInfo::ok)
+        .def_readonly("error",       &hbc::BigIntInfo::error)
+    ;
+
     py::class_<hbc::CJSModuleInfo>(m, "CJSModuleInfo")
         .def_readonly("function_index",         &hbc::CJSModuleInfo::functionIndex)
         .def_readonly("is_statically_resolved",  &hbc::CJSModuleInfo::isStaticallyResolved)

@@ -24,6 +24,7 @@
 #include "parser/string_kind.h"
 #include "parser/exception_table.h"
 #include "parser/function_source_table.h"
+#include "parser/bigint_table.h"
 #include "parser/cjs_module_table.h"
 #include "disasm/disasm.h"
 #include "cfg/cfg.h"
@@ -49,6 +50,7 @@ struct HBCFile::Impl {
     mutable std::optional<std::vector<CallSite>>     callGraph;
     mutable std::optional<std::vector<ModuleInfo>>   modules;
     mutable std::optional<std::vector<CJSModuleInfo>> cjsModules;
+    mutable std::optional<std::vector<BigIntInfo>>   bigInts;
     mutable std::optional<std::vector<LiteralSite>>  literalSites;
     mutable std::optional<std::string> arrayBuffer, objKeyBuffer, objValueBuffer;
 
@@ -192,6 +194,20 @@ std::vector<CJSModuleInfo> HBCFile::cjs_modules() const {
             staticallyResolved, strings());
     }
     return *impl_->cjsModules;
+}
+
+const std::vector<BigIntInfo>& HBCFile::bigints() const {
+    if (!impl_->bigInts) {
+        uint32_t tableOffset = 0, storageOffset = 0;
+        for (const auto& sec : section_map()) {
+            if (sec.name == "bigint table")   tableOffset   = sec.offset;
+            if (sec.name == "bigint storage") storageOffset = sec.offset;
+        }
+        impl_->bigInts = parseBigIntTable(
+            raw_data(), tableOffset, header().bigIntCount,
+            storageOffset, header().bigIntStorageSize);
+    }
+    return *impl_->bigInts;
 }
 
 const std::vector<LiteralSite>& HBCFile::literal_sites() const {

@@ -34,6 +34,8 @@ struct DecompileContext {
     const std::string& arrayBuffer;
     const std::string& objKeyBuffer;
     const std::string& objValueBuffer;
+    // The BigInt Table (HBCFile::bigints()), for LoadConstBigInt*.
+    const std::vector<BigIntInfo>& bigints;
 };
 
 // One leaf (non control-flow) instruction as a line of pseudo-JS; also Ret and
