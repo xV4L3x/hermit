@@ -6,6 +6,8 @@
 #include "hbc/format.h"
 
 #include <cstdint>
+#include <stdexcept>
+#include <string>
 
 namespace hbc {
 
@@ -32,6 +34,30 @@ inline StringSectionOffsets stringSectionOffsets(const HBCFileHeader& hdr) {
     o.overflowTable = o.stringTable   + hdr.stringCount         * sizeof(SmallStringTableEntry);
     o.stringStorage = o.overflowTable + hdr.overflowStringCount * sizeof(OverflowStringTableEntry);
     return o;
+}
+
+inline void validateStringSectionLayout(const HBCFileHeader& hdr, uint64_t fileSize) {
+    auto alignUp64 = [](uint64_t n, uint64_t a) { return (n + a - 1) & ~(a - 1); };
+
+    const uint64_t kindTable = alignUp64(
+        sizeof(HBCFileHeader) + uint64_t(hdr.functionCount) * sizeof(SmallFuncHeader), 4);
+    const uint64_t identifierHashes = alignUp64(
+        kindTable + uint64_t(hdr.stringKindCount) * 4, 4);
+    const uint64_t stringTable = alignUp64(
+        identifierHashes + uint64_t(hdr.identifierCount) * 4, 4);
+    const uint64_t overflowTable =
+        stringTable + uint64_t(hdr.stringCount) * sizeof(SmallStringTableEntry);
+    const uint64_t stringStorage =
+        overflowTable + uint64_t(hdr.overflowStringCount) * sizeof(OverflowStringTableEntry);
+    const uint64_t stringStorageEnd = stringStorage + uint64_t(hdr.stringStorageSize);
+
+    if (stringStorageEnd > fileSize) {
+        throw std::runtime_error(
+            "HBC header: string section layout exceeds file size (computed end 0x" +
+            std::to_string(stringStorageEnd) + " > file size " + std::to_string(fileSize) +
+            ") - functionCount/stringKindCount/identifierCount/stringCount/"
+            "overflowStringCount/stringStorageSize are inconsistent");
+    }
 }
 
 } // namespace hbc

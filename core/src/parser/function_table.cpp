@@ -60,7 +60,7 @@ std::vector<FunctionInfo> parseFunctionTable(
             // The real fields are in a FunctionHeader at largeOff (see format.h).
             const uint32_t largeOff = (fh.offset & 0xFFFF) | ((fh.infoOffset & 0xFFFF) << 16);
 
-            if (largeOff + sizeof(FunctionHeader) > hdr.fileLength) {
+            if (static_cast<uint64_t>(largeOff) + sizeof(FunctionHeader) > hdr.fileLength) {
                 std::fprintf(stderr,
                     "[funcTable] Error: function %u overflow offset 0x%X out of file bounds\n",
                     i, largeOff);

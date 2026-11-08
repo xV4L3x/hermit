@@ -90,16 +90,30 @@ struct StringLocation {
 };
 
 StringLocation locate(const SmallStringTableEntry& entry,
-                      const OverflowStringTableEntry* ovfTable, uint32_t ovfCount) {
+                      const OverflowStringTableEntry* ovfTable, uint32_t ovfCount,
+                      uint32_t storageSize, uint32_t index) {
+    StringLocation loc{};
     if (entry.length == 255) {
         if (entry.offset >= ovfCount)
             throw std::runtime_error("string table: overflow index " + std::to_string(entry.offset) +
                                      " out of range (overflowStringCount = " +
                                      std::to_string(ovfCount) + ")");
         const auto& ovf = ovfTable[entry.offset];
-        return {ovf.offset, ovf.length, true};
+        loc = {ovf.offset, ovf.length, true};
+    } else {
+        loc = {entry.offset, entry.length, false};
     }
-    return {entry.offset, entry.length, false};
+
+    // The runtime reads [offset, offset + length * unit) from the string
+    // storage; a range outside it reads past the end of the file.
+    const uint64_t unit = entry.isUTF16 ? 2 : 1;
+    const uint64_t end  = uint64_t(loc.offset) + uint64_t(loc.length) * unit;
+    if (end > storageSize)
+        throw std::runtime_error(
+            "string table: string " + std::to_string(index) + " spans bytes [" +
+            std::to_string(loc.offset) + ", " + std::to_string(end) +
+            ") but string storage is " + std::to_string(storageSize) + " bytes");
+    return loc;
 }
 
 } // namespace
@@ -118,7 +132,8 @@ std::vector<std::string> parseStringTable(const uint8_t* data, const HBCFileHead
 
     for (uint32_t i = 0; i < hdr.stringCount; ++i) {
         const auto& entry = strTable[i];
-        const auto loc = locate(entry, ovfTable, hdr.overflowStringCount);
+        const auto loc = locate(entry, ovfTable, hdr.overflowStringCount,
+                                 hdr.stringStorageSize, i);
 
         // isUTF16 always comes from the small entry: the overflow table has no such field.
         if (entry.isUTF16)
@@ -142,7 +157,8 @@ std::vector<StringEntry> parseStringEntries(const uint8_t* data,
 
     for (uint32_t i = 0; i < hdr.stringCount; ++i) {
         const auto& entry = strTable[i];
-        const auto loc = locate(entry, ovfTable, hdr.overflowStringCount);
+        const auto loc = locate(entry, ovfTable, hdr.overflowStringCount,
+                                 hdr.stringStorageSize, i);
 
         StringEntry se;
         se.storageOffset = off.stringStorage + loc.offset;

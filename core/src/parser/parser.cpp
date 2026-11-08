@@ -75,12 +75,16 @@ static const HBCFileHeader* validateHeader(const void* data, size_t size) {
 
     uint32_t ver{};
     std::memcpy(&ver, static_cast<const uint8_t*>(data) + 8, sizeof(ver));
+    const HBCFileHeader* hdr;
     switch (ver) {
-        case 96: return reinterpret_cast<const HBCFileHeader_v96*>(data);
-        case 95: return reinterpret_cast<const HBCFileHeader_v95*>(data);
-        case 94: return reinterpret_cast<const HBCFileHeader_v94*>(data);
+        case 96: hdr = reinterpret_cast<const HBCFileHeader_v96*>(data); break;
+        case 95: hdr = reinterpret_cast<const HBCFileHeader_v95*>(data); break;
+        case 94: hdr = reinterpret_cast<const HBCFileHeader_v94*>(data); break;
         default: throw UnsupportedVersionError{ver};
     }
+    
+    validateStringSectionLayout(*hdr, size);
+    return hdr;
 }
 
 HBCFile HBCFile::open(const std::string& path) {
