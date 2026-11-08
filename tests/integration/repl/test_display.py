@@ -157,3 +157,58 @@ def test_info_table_shows_each_source_file_on_its_own_line():
     # Neither file's full path leaked into the other's row.
     assert src_files[1] not in line0
     assert src_files[0] not in line1
+
+
+# --- info sections / strings / functions ----------------------------------
+
+_INFO_CORPUS = ["ridemovi.hbc", "overflow_func.hbc", "hello.hbc", "functions.hbc", "exceptions.hbc", "array_object_literals.hbc"]
+
+
+def test_sections_sorted_and_non_overlapping():
+    for name in _INFO_CORPUS:
+        info = display.sections_info(_open(name))
+        rows = info["rows"]
+        assert rows, name
+        assert [r[1] for r in rows] == sorted(r[1] for r in rows)
+        for (_, _, end, _, _, _), (_, start, _, _, _, _) in zip(rows, rows[1:]):
+            assert end <= start, f"{name}: sections overlap"
+        assert info["covered"] + info["uncovered"] == info["file_length"]
+        assert info["covered"] <= info["file_length"]
+
+
+def test_sections_table_renders_every_section():
+    hbc = _open("hello.hbc")
+    out = _render(display.make_info_sections_table(hbc))
+    for sec in hbc.section_map():
+        assert sec.name in out
+
+
+def test_strings_stats_invariants():
+    for name in _INFO_CORPUS:
+        hbc = _open(name)
+        st = display.strings_stats(hbc)
+        hdr = hbc.header()
+        assert st["total"] == hdr.string_count
+        assert sum(st["matrix"].values()) == hdr.string_count
+        assert st["matrix"][("identifier", "ascii")] + st["matrix"][("identifier", "utf16")] \
+            == hdr.identifier_count
+        assert st["overflow"] == hdr.overflow_string_count
+        assert st["unique"] + st["duplicates"] == st["total"]
+    _render(display.make_info_strings_table(_open("hello.hbc")))
+
+
+def test_functions_stats_invariants():
+    for name in _INFO_CORPUS:
+        hbc = _open(name)
+        st = display.functions_stats(hbc)
+        assert st["total"] == hbc.header().function_count
+        assert st["small"] + st["overflow"] == st["total"]
+        assert st["size_total"] == sum(f.bytecodeSizeInBytes for f in hbc.functions())
+        assert st["shared_groups"] <= st["shared_functions"]
+    _render(display.make_info_functions_table(_open("functions.hbc")))
+
+
+def test_info_table_has_extra_header_rows():
+    out = _render(display.make_info_table(_open("hello.hbc")))
+    for label in ("BigInts", "Segment ID", "Function sources", "Options"):
+        assert label in out

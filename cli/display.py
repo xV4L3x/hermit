@@ -145,6 +145,10 @@ def make_info_table(hbc: _libhbc.HBCFile) -> Table:
     table.add_row("  Identifiers",    str(hdr.identifier_count))
     table.add_row("  Overflow",       str(hdr.overflow_string_count))
     table.add_row("RegExps",          str(hdr.reg_exp_count))
+    table.add_row("BigInts",          str(hdr.bigint_count))
+    table.add_row("Segment ID",       str(hdr.segment_id))
+    table.add_row("Function sources", str(hdr.function_source_count))
+    table.add_row("Options",          f"{hdr.options:#04x}")
     table.add_row("Global function",  f"[{global_idx}] {funcs[global_idx].name}")
     table.add_row("Debug info offset", f"{hdr.debug_info_offset:#010x}")
 
@@ -172,6 +176,171 @@ def make_info_table(hbc: _libhbc.HBCFile) -> Table:
 
     table.add_row("Source hash",      hbc.header().source_hash.hex())
 
+    return table
+
+
+# ---------------------------------------------------------------------------
+# `info sections | strings | functions`
+# ---------------------------------------------------------------------------
+
+def sections_info(hbc: _libhbc.HBCFile) -> dict:
+    """Section map sorted by offset, with the uncovered gaps between sections.
+
+    Returns {"rows": [(name, start, end, size, align, gap_before)],
+             "file_length": int, "covered": int, "uncovered": int}.
+    """
+    secs = sorted(hbc.section_map(), key=lambda x: (x.offset, x.name))
+    rows = []
+    cursor = 0
+    covered = 0
+    for sec in secs:
+        end = sec.offset + sec.size
+        gap = max(0, sec.offset - cursor)
+        rows.append((sec.name, sec.offset, end, sec.size, sec.align, gap))
+        covered += sec.size
+        cursor = max(cursor, end)
+    file_length = hbc.header().file_length
+    return {
+        "rows": rows,
+        "file_length": file_length,
+        "covered": covered,
+        "uncovered": file_length - covered,
+    }
+
+
+def make_info_sections_table(hbc: _libhbc.HBCFile) -> Table:
+    info = sections_info(hbc)
+    table = Table(box=None, padding=(0, 2))
+    table.add_column("Section", style="bold")
+    table.add_column("Start", justify="right")
+    table.add_column("End", justify="right")
+    table.add_column("Size", justify="right")
+    table.add_column("Align", justify="right")
+    table.add_column("Gap before", justify="right")
+    for name, start, end, size, align, gap in info["rows"]:
+        table.add_row(name, f"{start:#010x}", f"{end:#010x}", f"{size:,}",
+                      str(align), f"{gap:,}" if gap else "")
+    table.add_row("", "", "", "", "", "")
+    table.add_row("[bold]File[/bold]", "", f"{info['file_length']:#010x}",
+                  f"{info['file_length']:,}", "", "")
+    table.add_row("[dim]Not in any section[/dim]", "", "",
+                  f"{info['uncovered']:,}", "", "")
+    return table
+
+
+def strings_stats(hbc: _libhbc.HBCFile) -> dict:
+    """Aggregate statistics over the string table."""
+    entries = hbc.string_entries()
+    texts = hbc.strings()
+    ident = _libhbc.StringKind.Identifier
+    matrix = {(k, enc): 0 for k in ("string", "identifier") for enc in ("ascii", "utf16")}
+    overflow = 0
+    for e in entries:
+        k = "identifier" if e.kind == ident else "string"
+        matrix[(k, "utf16" if e.is_utf16 else "ascii")] += 1
+        overflow += 1 if e.is_overflow else 0
+    lengths = [e.char_length for e in entries]
+    non_ascii = sum(1 for t in texts if any(ord(c) > 0x7F for c in t))
+    return {
+        "total": len(entries),
+        "matrix": matrix,
+        "overflow": overflow,
+        "empty": sum(1 for n in lengths if n == 0),
+        "unique": len(set(texts)),
+        "duplicates": len(texts) - len(set(texts)),
+        "non_ascii": non_ascii,
+        "storage_bytes": hbc.header().string_storage_size,
+        "len_min": min(lengths) if lengths else 0,
+        "len_max": max(lengths) if lengths else 0,
+        "len_avg": (sum(lengths) / len(lengths)) if lengths else 0.0,
+    }
+
+
+def make_info_strings_table(hbc: _libhbc.HBCFile) -> Table:
+    st = strings_stats(hbc)
+    m = st["matrix"]
+    total = st["total"] or 1
+
+    def pct(n: int) -> str:
+        return f"{n:,}  ({100.0 * n / total:.1f}%)"
+
+    table = Table(show_header=False, box=None, padding=(0, 2))
+    table.add_column("Field", style="bold", min_width=24)
+    table.add_column("Value")
+    table.add_row("Total",                 f"{st['total']:,}")
+    table.add_row("  String, ASCII",       pct(m[("string", "ascii")]))
+    table.add_row("  String, UTF-16",      pct(m[("string", "utf16")]))
+    table.add_row("  Identifier, ASCII",   pct(m[("identifier", "ascii")]))
+    table.add_row("  Identifier, UTF-16",  pct(m[("identifier", "utf16")]))
+    table.add_row("Overflow",              pct(st["overflow"]))
+    table.add_row("Empty",                 f"{st['empty']:,}")
+    table.add_row("Containing non-ASCII",  pct(st["non_ascii"]))
+    table.add_row("Unique contents",       f"{st['unique']:,}")
+    table.add_row("Duplicate contents",    f"{st['duplicates']:,}")
+    table.add_row("Storage",               f"{st['storage_bytes']:,} bytes")
+    table.add_row("Length (chars)",
+                  f"min {st['len_min']:,}  max {st['len_max']:,}  avg {st['len_avg']:.1f}")
+    return table
+
+
+def functions_stats(hbc: _libhbc.HBCFile) -> dict:
+    """Aggregate statistics over the function table."""
+    funcs = hbc.functions()
+    sizes = [f.bytecodeSizeInBytes for f in funcs]
+    shared = [f for f in funcs if f.shared]
+    # One body = one (offset, size) group; count groups of functions sharing it.
+    groups = {(f.offset, f.bytecodeSizeInBytes) for f in shared}
+    return {
+        "total": len(funcs),
+        "small": sum(1 for f in funcs if not f.overflowed),
+        "overflow": sum(1 for f in funcs if f.overflowed),
+        "strict": sum(1 for f in funcs if f.isStrictMode),
+        "async": sum(1 for f in funcs if f.isAsync),
+        "generator": sum(1 for f in funcs if f.isGenerator),
+        "exception_handler": sum(1 for f in funcs if f.hasExceptionHandler),
+        "debug_info": sum(1 for f in funcs if f.hasDebugInfo),
+        "prohibit_call": sum(1 for f in funcs if f.prohibitCall),
+        "prohibit_construct": sum(1 for f in funcs if f.prohibitConstruct),
+        "preserved_source": sum(1 for f in funcs if f.hasPreservedSource),
+        "shared_functions": len(shared),
+        "shared_groups": len(groups),
+        "size_total": sum(sizes),
+        "size_min": min(sizes) if sizes else 0,
+        "size_max": max(sizes) if sizes else 0,
+        "size_avg": (sum(sizes) / len(sizes)) if sizes else 0.0,
+        "frame_max": max((f.frameSize for f in funcs), default=0),
+        "params_max": max((f.paramCount for f in funcs), default=0),
+    }
+
+
+def make_info_functions_table(hbc: _libhbc.HBCFile) -> Table:
+    st = functions_stats(hbc)
+    total = st["total"] or 1
+
+    def pct(n: int) -> str:
+        return f"{n:,}  ({100.0 * n / total:.1f}%)"
+
+    table = Table(show_header=False, box=None, padding=(0, 2))
+    table.add_column("Field", style="bold", min_width=24)
+    table.add_column("Value")
+    table.add_row("Total",               f"{st['total']:,}")
+    table.add_row("  Small header",      pct(st["small"]))
+    table.add_row("  Overflow header",   pct(st["overflow"]))
+    table.add_row("Strict mode",         pct(st["strict"]))
+    table.add_row("Async",               pct(st["async"]))
+    table.add_row("Generator",           pct(st["generator"]))
+    table.add_row("Exception handlers",  pct(st["exception_handler"]))
+    table.add_row("Debug info",          pct(st["debug_info"]))
+    table.add_row("Prohibit call",       pct(st["prohibit_call"]))
+    table.add_row("Prohibit construct",  pct(st["prohibit_construct"]))
+    table.add_row("Preserved source",    pct(st["preserved_source"]))
+    table.add_row("Shared bodies",
+                  f"{st['shared_functions']:,} functions in {st['shared_groups']:,} groups")
+    table.add_row("Bytecode size",
+                  f"total {st['size_total']:,}  min {st['size_min']:,}  "
+                  f"max {st['size_max']:,}  avg {st['size_avg']:.1f}")
+    table.add_row("Max frame size",      f"{st['frame_max']:,}")
+    table.add_row("Max param count",     f"{st['params_max']:,}")
     return table
 
 

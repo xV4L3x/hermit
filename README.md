@@ -203,7 +203,7 @@ by index or value (`string:42`, `string:"hello"`), literal sites by index
 | Command | What it does |
 |---|---|
 | `open <file.hbc>` | Opens a file. |
-| `info` | Header summary: version, sizes, counts, global function, source hash. |
+| `info [sections\|strings\|functions\|all]` | Header summary (version, sizes, counts, global function, source hash); `sections` lists every file section with start/end/size/alignment, `strings` breaks the string table down by kind, encoding and overflow, `functions` counts small/overflow headers, flags and shared bodies. |
 | `strings [--identifiers\|--strings] [filter:<text>]` | String table with kinds. |
 | `arrays [--arrays\|--objects] [filter:<text>] [func:<N\|name>]` | Array and object literal sites, decoded. |
 | `functions` | All functions with parameters, registers and flags; Metro module ids. |

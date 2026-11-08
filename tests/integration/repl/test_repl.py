@@ -100,6 +100,14 @@ def test_open_and_info():
     r._dispatch("info")
 
 
+def test_info_subcommands(capsys):
+    r = _repl("functions.hbc")
+    for sub in ("sections", "strings", "functions", "all"):
+        r._dispatch(f"info {sub}")
+    r._dispatch("info bogus")
+    r._dispatch("info sections extra")
+
+
 # --- strings / arrays / functions (show_list) -----------------------------
 
 

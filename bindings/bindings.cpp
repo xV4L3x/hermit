@@ -236,9 +236,23 @@ PYBIND11_MODULE(_libhbc, m) {
         .def_readonly("obj_value_buffer_size", &hbc::HBCFileHeader::objValueBufferSize)
         .def_readonly("reg_exp_count",         &hbc::HBCFileHeader::regExpCount)
         .def_readonly("debug_info_offset",     &hbc::HBCFileHeader::debugInfoOffset)
+        .def_readonly("bigint_count",          &hbc::HBCFileHeader::bigIntCount)
+        .def_readonly("bigint_storage_size",   &hbc::HBCFileHeader::bigIntStorageSize)
+        .def_readonly("reg_exp_storage_size",  &hbc::HBCFileHeader::regExpStorageSize)
+        .def_readonly("segment_id",            &hbc::HBCFileHeader::segmentID)
+        .def_readonly("cjs_module_count",      &hbc::HBCFileHeader::cjsModuleCount)
+        .def_readonly("function_source_count", &hbc::HBCFileHeader::functionSourceCount)
+        .def_readonly("options",               &hbc::HBCFileHeader::options)
         .def_property_readonly("source_hash", [](const hbc::HBCFileHeader& h) {
             return py::bytes(reinterpret_cast<const char*>(h.sourceHash), sizeof(h.sourceHash));
         })
+    ;
+
+    py::class_<hbc::Section>(m, "Section")
+        .def_readonly("name",   &hbc::Section::name)
+        .def_readonly("offset", &hbc::Section::offset)
+        .def_readonly("size",   &hbc::Section::size)
+        .def_readonly("align",  &hbc::Section::align)
     ;
 
     py::class_<hbc::HBCFile>(m, "HBCFile")
@@ -254,6 +268,7 @@ PYBIND11_MODULE(_libhbc, m) {
         .def("string_kinds",       &hbc::HBCFile::stringKinds)
         .def("string_entries",     &hbc::HBCFile::string_entries)
         .def("literal_sites",      &hbc::HBCFile::literal_sites)
+        .def("section_map",        &hbc::HBCFile::section_map)
         .def("array_buffer", [](const hbc::HBCFile& self) { return toBytes(self.array_buffer()); })
         .def("obj_key_buffer", [](const hbc::HBCFile& self) { return toBytes(self.obj_key_buffer()); })
         .def("obj_value_buffer", [](const hbc::HBCFile& self) { return toBytes(self.obj_value_buffer()); })

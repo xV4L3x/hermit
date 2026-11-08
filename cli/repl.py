@@ -5,7 +5,7 @@ import shlex
 from typing import Optional
 
 from prompt_toolkit import PromptSession
-from prompt_toolkit.completion import WordCompleter
+from prompt_toolkit.completion import NestedCompleter
 from prompt_toolkit.history import FileHistory
 from prompt_toolkit.styles import Style
 from rich.console import Console
@@ -56,7 +56,11 @@ class HermitREPL:
         history_path = os.path.expanduser("~/.hermit_history")
         self.session: PromptSession = PromptSession(
             history=_SafeFileHistory(history_path),
-            completer=WordCompleter(_COMMANDS, ignore_case=True),
+            completer=NestedCompleter(
+                {c: (NestedCompleter({k: None for k in (*self._INFO_VIEWS, "all")},
+                                     ignore_case=True) if c == "info" else None)
+                 for c in _COMMANDS},
+                ignore_case=True),
             style=_PROMPT_STYLE,
         )
 
@@ -227,10 +231,31 @@ class HermitREPL:
             return
         self._open_file(args[0])
 
+    _INFO_VIEWS = {
+        "sections":  ("Sections",  display.make_info_sections_table),
+        "strings":   ("Strings",   display.make_info_strings_table),
+        "functions": ("Functions", display.make_info_functions_table),
+    }
+
     def cmd_info(self, args: list[str]) -> None:
-        """info  - shows the HBC header summary"""
+        """info [sections|strings|functions|all]  - header summary and layout statistics"""
         proj = self._require_project()
-        self.console.print(display.make_info_table(proj.hbc))
+        if not args:
+            self.console.print(display.make_info_table(proj.hbc))
+            return
+        if len(args) > 1 or (args[0] != "all" and args[0] not in self._INFO_VIEWS):
+            self.console.print(
+                "Usage: info \\[sections|strings|functions|all]", style="red")
+            return
+        if args[0] == "all":
+            self.console.print(display.make_info_table(proj.hbc))
+            names = list(self._INFO_VIEWS)
+        else:
+            names = [args[0]]
+        for name in names:
+            title, make = self._INFO_VIEWS[name]
+            self.console.print(f"\n[bold cyan]{title}[/bold cyan]")
+            self.console.print(make(proj.hbc))
 
     def cmd_strings(self, args: list[str]) -> None:
         """strings [--identifiers|--strings] [filter:<text>]  - lists strings with kind"""
