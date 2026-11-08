@@ -57,6 +57,18 @@ PYBIND11_MODULE(_libhbc, m) {
         .value("Identifier", hbc::StringKind::Identifier)
     ;
 
+    py::enum_<hbc::ValidationMode>(m, "ValidationMode")
+        .value("Strict",     hbc::ValidationMode::Strict)
+        .value("Permissive", hbc::ValidationMode::Permissive)
+    ;
+
+    py::enum_<hbc::StringVerdict>(m, "StringVerdict")
+        .value("InsideStorage",    hbc::StringVerdict::InsideStorage)
+        .value("InsideFile",       hbc::StringVerdict::InsideFile)
+        .value("OutsideFile",      hbc::StringVerdict::OutsideFile)
+        .value("BadOverflowIndex", hbc::StringVerdict::BadOverflowIndex)
+    ;
+
     // Raw per-string metadata - parallel to strings()/string_kinds().
     py::class_<hbc::StringEntry>(m, "StringEntry")
         .def_readonly("storage_offset", &hbc::StringEntry::storageOffset)
@@ -65,6 +77,8 @@ PYBIND11_MODULE(_libhbc, m) {
         .def_readonly("is_utf16",       &hbc::StringEntry::isUTF16)
         .def_readonly("is_overflow",    &hbc::StringEntry::isOverflow)
         .def_readonly("kind",           &hbc::StringEntry::kind)
+        .def_readonly("verdict",        &hbc::StringEntry::verdict)
+        .def_readonly("misaligned",     &hbc::StringEntry::misaligned)
     ;
 
     // NewArrayWithBuffer[Long]/NewObjectWithBuffer[Long] site.
@@ -256,11 +270,13 @@ PYBIND11_MODULE(_libhbc, m) {
     ;
 
     py::class_<hbc::HBCFile>(m, "HBCFile")
-        .def_static("open",        &hbc::HBCFile::open)
-        .def_static("from_bytes",  [](const py::bytes& b) {
-            return hbc::HBCFile::from_bytes(static_cast<std::string>(b));
-        }, py::arg("data"),
+        .def_static("open",        &hbc::HBCFile::open,
+                    py::arg("path"), py::arg("mode") = hbc::ValidationMode::Strict)
+        .def_static("from_bytes",  [](const py::bytes& b, hbc::ValidationMode mode) {
+            return hbc::HBCFile::from_bytes(static_cast<std::string>(b), mode);
+        }, py::arg("data"), py::arg("mode") = hbc::ValidationMode::Strict,
            "Like open() but from an in-memory buffer (bytes). Used by the patcher.")
+        .def("validation_mode",    &hbc::HBCFile::validation_mode)
         .def("version",            &hbc::HBCFile::version)
         .def("header",             &hbc::HBCFile::header,
              py::return_value_policy::reference_internal)
@@ -461,4 +477,6 @@ PYBIND11_MODULE(_libhbc, m) {
     py::register_exception<hbc::InvalidMagicError>(m,     "InvalidMagicError");
     py::register_exception<hbc::UnsupportedVersionError>(m, "UnsupportedVersionError");
     py::register_exception<hbc::FileTooSmallError>(m,      "FileTooSmallError");
+    py::register_exception<hbc::InvalidStringEntryError>(m, "InvalidStringEntryError",
+                                                            PyExc_RuntimeError);
 }

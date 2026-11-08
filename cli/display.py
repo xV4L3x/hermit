@@ -228,6 +228,14 @@ def make_info_sections_table(hbc: _libhbc.HBCFile) -> Table:
     return table
 
 
+_VERDICT_LABEL = {
+    _libhbc.StringVerdict.InsideStorage:    "inside storage",
+    _libhbc.StringVerdict.InsideFile:       "outside storage, inside file",
+    _libhbc.StringVerdict.OutsideFile:      "outside file",
+    _libhbc.StringVerdict.BadOverflowIndex: "bad overflow index",
+}
+
+
 def strings_stats(hbc: _libhbc.HBCFile) -> dict:
     """Aggregate statistics over the string table."""
     entries = hbc.string_entries()
@@ -239,12 +247,17 @@ def strings_stats(hbc: _libhbc.HBCFile) -> dict:
         k = "identifier" if e.kind == ident else "string"
         matrix[(k, "utf16" if e.is_utf16 else "ascii")] += 1
         overflow += 1 if e.is_overflow else 0
+    verdicts = {v: 0 for v in _VERDICT_LABEL}
+    for e in entries:
+        verdicts[e.verdict] += 1
     lengths = [e.char_length for e in entries]
     non_ascii = sum(1 for t in texts if any(ord(c) > 0x7F for c in t))
     return {
         "total": len(entries),
         "matrix": matrix,
         "overflow": overflow,
+        "verdicts": verdicts,
+        "misaligned": sum(1 for e in entries if e.misaligned),
         "empty": sum(1 for n in lengths if n == 0),
         "unique": len(set(texts)),
         "duplicates": len(texts) - len(set(texts)),
@@ -273,6 +286,11 @@ def make_info_strings_table(hbc: _libhbc.HBCFile) -> Table:
     table.add_row("  Identifier, ASCII",   pct(m[("identifier", "ascii")]))
     table.add_row("  Identifier, UTF-16",  pct(m[("identifier", "utf16")]))
     table.add_row("Overflow",              pct(st["overflow"]))
+    for v, n in st["verdicts"].items():
+        if v != _libhbc.StringVerdict.InsideStorage and n:
+            table.add_row(f"  [red]{_VERDICT_LABEL[v]}[/red]", pct(n))
+    if st["misaligned"]:
+        table.add_row("  [red]UTF-16 at odd offset[/red]", pct(st["misaligned"]))
     table.add_row("Empty",                 f"{st['empty']:,}")
     table.add_row("Containing non-ASCII",  pct(st["non_ascii"]))
     table.add_row("Unique contents",       f"{st['unique']:,}")
@@ -443,9 +461,11 @@ def strings_to_ansi_rows(
     kinds: list,
     filter_text: Optional[str] = None,
     kind_filter: Optional[str] = None,
+    verdicts: Optional[list] = None,
 ) -> list[str]:
     """Strings as ANSI rows (fast, no rich.Table). `kind_filter`: None,
-    "identifier" or "string"."""
+    "identifier" or "string". `verdicts` (parallel to `strings`) marks the entries
+    whose range is not inside the string storage."""
     rows = []
     for i, (s, k) in enumerate(zip(strings, kinds)):
         is_id = (k == _libhbc.StringKind.Identifier)
@@ -457,7 +477,10 @@ def strings_to_ansi_rows(
             continue
         kind_str = "\x1b[36m[identifier]\x1b[0m" if is_id else "\x1b[32m[string]    \x1b[0m"
         display_s = ellipsize(escape_ws(s), 64)
-        rows.append(f"\x1b[2m[{i:6d}]\x1b[0m {display_s:<66} {kind_str}")
+        flag = ""
+        if verdicts is not None and verdicts[i] != _libhbc.StringVerdict.InsideStorage:
+            flag = f" \x1b[31m[{_VERDICT_LABEL[verdicts[i]]}]\x1b[0m"
+        rows.append(f"\x1b[2m[{i:6d}]\x1b[0m {display_s:<66} {kind_str}{flag}")
     return rows
 
 

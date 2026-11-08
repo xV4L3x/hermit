@@ -66,9 +66,9 @@ class HermitREPL:
 
     # Main loop
 
-    def run(self, initial_file: Optional[str] = None) -> None:
+    def run(self, initial_file: Optional[str] = None, permissive: bool = False) -> None:
         if initial_file:
-            self._open_file(initial_file)
+            self._open_file(initial_file, permissive)
 
         self.console.print(
             "[bold cyan]hermit[/] - Hermes Reverse Engineering & Manipulation Interactive Toolkit\n"
@@ -101,7 +101,9 @@ class HermitREPL:
         ver  = self.project.hbc.version()
         # + = bytecode patched in memory (not written)
         mark = "+" if self.project.is_patched else ""
-        return f"[hbc v{ver} | {name}{mark}] > "
+        # ro = opened --permissive: read-only analysis of a malformed file
+        ro = " ro" if self.project.is_permissive else ""
+        return f"[hbc v{ver}{ro} | {name}{mark}] > "
 
     def _dispatch(self, line: str) -> None:
         try:
@@ -125,7 +127,7 @@ class HermitREPL:
             raise RuntimeError("No file open. Use: open <file.hbc>")
         return self.project
 
-    def _open_file(self, path: str) -> None:
+    def _open_file(self, path: str, permissive: bool = False) -> None:
         path = os.path.expanduser(os.path.abspath(path))
         if not os.path.exists(path):
             raise FileNotFoundError(f"File not found: {path}")
@@ -133,7 +135,11 @@ class HermitREPL:
         ext = os.path.splitext(path)[1].lower()
         if ext != ".hbc":
             raise ValueError(f"Unknown extension {ext!r} - expected .hbc")
-        proj = HermitProject.from_hbc(path)
+        proj = HermitProject.from_hbc(path, permissive)
+        try:
+            proj.hbc.string_entries()   # strict: fail here, not at the first command
+        except _libhbc.InvalidStringEntryError as exc:
+            raise ValueError(f"{exc}\nUse `open --permissive <file>` to analyse it read-only") from exc
 
         self.project = proj
         name = os.path.splitext(os.path.basename(proj.hbc_path))[0]
@@ -144,6 +150,12 @@ class HermitREPL:
             f"[green]Opened[/] [bold]{name}[/] "
             f"(HBC v{ver}, {hdr.function_count} functions, {hdr.string_count} strings)"
         )
+        if permissive:
+            bad = [e for e in proj.hbc.string_entries()
+                   if e.verdict != _libhbc.StringVerdict.InsideStorage]
+            self.console.print(
+                f"[yellow]Permissive, read-only:[/] {len(bad)} string entries outside the "
+                "string storage (see `info strings`)")
 
     def _show_rows(
         self,
@@ -225,11 +237,13 @@ class HermitREPL:
         return filter_text, kind_filter, func_arg
 
     def cmd_open(self, args: list[str]) -> None:
-        """open <file.hbc>  - opens an HBC file"""
+        """open [--permissive] <file.hbc>  - opens an HBC file (permissive: read-only, tolerates bad string entries)"""
+        permissive = "--permissive" in args
+        args = [a for a in args if a != "--permissive"]
         if len(args) != 1:
-            self.console.print("Usage: open <file.hbc>")
+            self.console.print("Usage: open [--permissive] <file.hbc>")
             return
-        self._open_file(args[0])
+        self._open_file(args[0], permissive)
 
     _INFO_VIEWS = {
         "sections":  ("Sections",  display.make_info_sections_table),
@@ -265,7 +279,9 @@ class HermitREPL:
 
         strings = proj.hbc.strings()
         kinds   = proj.hbc.string_kinds()
-        rows    = display.strings_to_ansi_rows(strings, kinds, filter_text, kind_filter)
+        verdicts = ([e.verdict for e in proj.hbc.string_entries()]
+                    if proj.is_permissive else None)
+        rows    = display.strings_to_ansi_rows(strings, kinds, filter_text, kind_filter, verdicts)
         title   = f"strings  {len(rows)}/{len(strings)}"
         if kind_filter:
             title += f"  [{kind_filter}s only]"

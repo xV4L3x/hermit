@@ -23,16 +23,39 @@ enum class StringKind : uint8_t {
     Identifier = 1,
 };
 
+// Where the byte range of a string lies, compared with the string storage and
+// the file. The runtime reads [offset, offset + length * unit) without checking it.
+enum class StringVerdict : uint8_t {
+    InsideStorage,    // the range is inside the string storage (every compiler-made file)
+    InsideFile,       // outside the storage but inside the file: it aliases other sections
+    OutsideFile,      // the range leaves the file: nothing can be read
+    BadOverflowIndex, // length == 255 and the overflow table index is out of range
+};
+
 // Raw location of a string in the file, for same-length in-place edits.
 // HBCFile::string_entries() is parallel to strings() and stringKinds().
 struct StringEntry {
     uint32_t   storageOffset;  // ABSOLUTE file offset of the first byte
-    uint32_t   byteLength;     // bytes in the storage: charLength (ASCII) or charLength * 2 (UTF-16)
+    uint32_t   byteLength;     // bytes in the storage: charLength (ASCII) or charLength * 2 (UTF-16);
+                               // saturates at UINT32_MAX when the declared length is absurd
     uint32_t   charLength;     // code units: bytes of an ASCII entry, 16-bit units of a UTF-16 one
                                // (resolved, overflow table included)
     bool       isUTF16;
     bool       isOverflow;     // SmallStringTableEntry.length == 255
     StringKind kind;
+    StringVerdict verdict = StringVerdict::InsideStorage;
+    bool       misaligned = false;  // UTF-16 entry at an odd storage offset (the runtime does
+                                    // not require alignment; compiler-made files never have it)
+};
+
+// How strictly HBCFile checks what it parses. The header and the section layout are
+// always checked; the mode only decides what happens to a string entry whose range
+// is not InsideStorage.
+enum class ValidationMode : uint8_t {
+    Strict,      // throw InvalidStringEntryError (default)
+    Permissive,  // keep the entry, report it in string_entries(); strings() yields the bytes when
+                 // the range is InsideFile and "" otherwise. For analysing malformed or hostile
+                 // files; the patcher must treat such a file as read-only.
 };
 
 // =============================================================================
@@ -329,11 +352,13 @@ class HBCFile {
 public:
     // Opens and validates a file. Throws FileTooSmallError, InvalidMagicError
     // or UnsupportedVersionError.
-    static HBCFile open(const std::string& path);
+    static HBCFile open(const std::string& path, ValidationMode mode = ValidationMode::Strict);
 
     // Like open() but from an in-memory image (copied). Used by the patcher to
     // re-parse an edited image. Same exceptions as open().
-    static HBCFile from_bytes(const std::string& bytes);
+    static HBCFile from_bytes(const std::string& bytes, ValidationMode mode = ValidationMode::Strict);
+
+    ValidationMode validation_mode() const;
 
     uint32_t version() const;  // 94, 95 or 96
 
@@ -400,6 +425,14 @@ struct InvalidMagicError : std::runtime_error {
 struct UnsupportedVersionError : std::runtime_error {
     explicit UnsupportedVersionError(uint32_t v)
         : std::runtime_error("Unsupported HBC version: " + std::to_string(v)) {}
+};
+
+// A string entry whose byte range is not inside the string storage (Strict mode).
+struct InvalidStringEntryError : std::runtime_error {
+    uint32_t      index;
+    StringVerdict verdict;
+    InvalidStringEntryError(uint32_t i, StringVerdict v, const std::string& reason)
+        : std::runtime_error(reason), index(i), verdict(v) {}
 };
 
 // Smaller than the 128-byte header.

@@ -242,3 +242,40 @@ TEST_CASE("overflow index outside the table is rejected",
     auto f = hbc::HBCFile::from_bytes(buildOverflowFile({2, 0}, 2));
     REQUIRE_THROWS_AS(f.strings(), std::runtime_error);
 }
+
+// --- ranges outside the string storage -------------------------------------
+
+namespace {
+// hello.hbc with header.stringStorageSize (0x3C) cut to one byte.
+std::string helloWithTinyStorage() {
+    auto f = hbc::HBCFile::open(HELLO);
+    auto bytes = f.serialize();
+    const uint32_t one = 1;
+    std::memcpy(bytes.data() + 0x3C, &one, sizeof(one));
+    return std::string(bytes.begin(), bytes.end());
+}
+} // namespace
+
+TEST_CASE("strict mode rejects a range outside the storage with its index",
+          "[string-table][strings][validation]") {
+    auto f = hbc::HBCFile::from_bytes(helloWithTinyStorage());
+    try {
+        f.strings();
+        FAIL("expected InvalidStringEntryError");
+    } catch (const hbc::InvalidStringEntryError& e) {
+        REQUIRE(e.verdict == hbc::StringVerdict::InsideFile);
+        REQUIRE(e.index < f.header().stringCount);
+    }
+}
+
+TEST_CASE("permissive mode decodes a range inside the file and reports it",
+          "[string-table][strings][validation]") {
+    const auto good = hbc::HBCFile::open(HELLO).strings();
+    auto f = hbc::HBCFile::from_bytes(helloWithTinyStorage(), hbc::ValidationMode::Permissive);
+    REQUIRE(f.validation_mode() == hbc::ValidationMode::Permissive);
+    REQUIRE(f.strings() == good);
+    bool sawInsideFile = false;
+    for (const auto& e : f.string_entries())
+        sawInsideFile |= e.verdict == hbc::StringVerdict::InsideFile;
+    REQUIRE(sawInsideFile);
+}

@@ -202,7 +202,7 @@ by index or value (`string:42`, `string:"hello"`), literal sites by index
 
 | Command | What it does |
 |---|---|
-| `open <file.hbc>` | Opens a file. |
+| `open [--permissive] <file.hbc>` | Opens a file. A string entry whose byte range leaves the string storage is rejected; `--permissive` (also `python -m cli.main --permissive <file>`) opens such a malformed file read-only and `info strings` / `strings` report each bad entry (inside file / outside file / bad overflow index). |
 | `info [sections\|strings\|functions\|all]` | Header summary (version, sizes, counts, global function, source hash); `sections` lists every file section with start/end/size/alignment, `strings` breaks the string table down by kind, encoding and overflow, `functions` counts small/overflow headers, flags and shared bodies. |
 | `strings [--identifiers\|--strings] [filter:<text>]` | String table with kinds. |
 | `arrays [--arrays\|--objects] [filter:<text>] [func:<N\|name>]` | Array and object literal sites, decoded. |

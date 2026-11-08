@@ -87,33 +87,82 @@ struct StringLocation {
     uint32_t offset;
     uint32_t length;  // code units: 16-bit units for UTF-16, bytes (= characters) for ASCII
     bool     isOverflow;
+    bool     badOverflowIndex;
 };
 
 StringLocation locate(const SmallStringTableEntry& entry,
-                      const OverflowStringTableEntry* ovfTable, uint32_t ovfCount,
-                      uint32_t storageSize, uint32_t index) {
-    StringLocation loc{};
+                      const OverflowStringTableEntry* ovfTable, uint32_t ovfCount) {
     if (entry.length == 255) {
         if (entry.offset >= ovfCount)
-            throw std::runtime_error("string table: overflow index " + std::to_string(entry.offset) +
-                                     " out of range (overflowStringCount = " +
-                                     std::to_string(ovfCount) + ")");
+            return {0, 0, true, true};
         const auto& ovf = ovfTable[entry.offset];
-        loc = {ovf.offset, ovf.length, true};
-    } else {
-        loc = {entry.offset, entry.length, false};
+        return {ovf.offset, ovf.length, true, false};
     }
+    return {entry.offset, entry.length, false, false};
+}
 
-    // The runtime reads [offset, offset + length * unit) from the string
-    // storage; a range outside it reads past the end of the file.
-    const uint64_t unit = entry.isUTF16 ? 2 : 1;
-    const uint64_t end  = uint64_t(loc.offset) + uint64_t(loc.length) * unit;
-    if (end > storageSize)
-        throw std::runtime_error(
-            "string table: string " + std::to_string(index) + " spans bytes [" +
-            std::to_string(loc.offset) + ", " + std::to_string(end) +
-            ") but string storage is " + std::to_string(storageSize) + " bytes");
-    return loc;
+std::string describe(uint32_t index, const StringEntry& se, const StringLocation& loc,
+                     uint32_t overflowCount, uint64_t storageSize, uint64_t fileSize) {
+    const std::string who = "string table: string " + std::to_string(index);
+    const uint64_t end = uint64_t(loc.offset) + uint64_t(loc.length) * (se.isUTF16 ? 2 : 1);
+    switch (se.verdict) {
+        case StringVerdict::BadOverflowIndex:
+            return who + ": overflow index out of range (overflowStringCount = " +
+                   std::to_string(overflowCount) + ")";
+        case StringVerdict::InsideFile:
+            return who + " spans bytes [" + std::to_string(loc.offset) + ", " + std::to_string(end) +
+                   ") but string storage is " + std::to_string(storageSize) +
+                   " bytes (the range stays inside the file)";
+        default:
+            return who + " spans bytes [" + std::to_string(loc.offset) + ", " + std::to_string(end) +
+                   ") but string storage is " + std::to_string(storageSize) +
+                   " bytes (the range leaves the file, " + std::to_string(fileSize) + " bytes)";
+    }
+}
+
+// One StringEntry per string, with its verdict. Throws in Strict mode. The caller
+// guarantees (validateStringSectionLayout) that the three tables and the storage lie
+// inside the file, so an InsideStorage range is always readable.
+std::vector<StringEntry> resolveEntries(const uint8_t* data, const HBCFileHeader& hdr,
+                                        size_t fileSize, ValidationMode mode) {
+    const auto off = stringSectionOffsets(hdr);
+    const auto* strTable = reinterpret_cast<const SmallStringTableEntry*>(data + off.stringTable);
+    const auto* ovfTable = reinterpret_cast<const OverflowStringTableEntry*>(data + off.overflowTable);
+    const uint64_t storageSize = hdr.stringStorageSize;
+
+    std::vector<StringEntry> result;
+    result.reserve(hdr.stringCount);
+
+    for (uint32_t i = 0; i < hdr.stringCount; ++i) {
+        const auto& entry = strTable[i];
+        const auto loc = locate(entry, ovfTable, hdr.overflowStringCount);
+
+        StringEntry se{};
+        se.storageOffset = off.stringStorage + loc.offset;
+        se.charLength    = loc.length;
+        // isUTF16 always comes from the small entry: the overflow table has no such field.
+        se.isUTF16       = entry.isUTF16 != 0;
+        const uint64_t bytes = uint64_t(loc.length) * (se.isUTF16 ? 2 : 1);
+        se.byteLength    = bytes > UINT32_MAX ? UINT32_MAX : static_cast<uint32_t>(bytes);
+        se.isOverflow    = loc.isOverflow;
+        se.misaligned    = se.isUTF16 && (loc.offset % 2) != 0;
+
+        if (loc.badOverflowIndex)
+            se.verdict = StringVerdict::BadOverflowIndex;
+        else if (uint64_t(loc.offset) + bytes <= storageSize)
+            se.verdict = StringVerdict::InsideStorage;
+        else if (uint64_t(off.stringStorage) + loc.offset + bytes <= fileSize)
+            se.verdict = StringVerdict::InsideFile;
+        else
+            se.verdict = StringVerdict::OutsideFile;
+
+        if (se.verdict != StringVerdict::InsideStorage && mode == ValidationMode::Strict)
+            throw InvalidStringEntryError(
+                i, se.verdict, describe(i, se, loc, hdr.overflowStringCount, storageSize, fileSize));
+
+        result.push_back(se);
+    }
+    return result;
 }
 
 } // namespace
@@ -121,55 +170,31 @@ StringLocation locate(const SmallStringTableEntry& entry,
 // The tables are read through typed pointers: the structs are packed, the file
 // is little-endian like the host, and `data` is page-aligned (mmap) with
 // 4-aligned section offsets.
-std::vector<std::string> parseStringTable(const uint8_t* data, const HBCFileHeader& hdr) {
-    const auto off = stringSectionOffsets(hdr);
-    const auto* strTable = reinterpret_cast<const SmallStringTableEntry*>(data + off.stringTable);
-    const auto* ovfTable = reinterpret_cast<const OverflowStringTableEntry*>(data + off.overflowTable);
-    const uint8_t* strStorage = data + off.stringStorage;
+std::vector<std::string> parseStringTable(const uint8_t* data, const HBCFileHeader& hdr,
+                                          size_t fileSize, ValidationMode mode) {
+    const auto entries = resolveEntries(data, hdr, fileSize, mode);
 
     std::vector<std::string> result;
-    result.reserve(hdr.stringCount);
-
-    for (uint32_t i = 0; i < hdr.stringCount; ++i) {
-        const auto& entry = strTable[i];
-        const auto loc = locate(entry, ovfTable, hdr.overflowStringCount,
-                                 hdr.stringStorageSize, i);
-
-        // isUTF16 always comes from the small entry: the overflow table has no such field.
-        if (entry.isUTF16)
-            result.push_back(utf16LeToUtf8(strStorage + loc.offset, loc.length));
-        else
-            result.push_back(asciiToString(strStorage + loc.offset, loc.length));
+    result.reserve(entries.size());
+    for (const auto& se : entries) {
+        if (se.verdict == StringVerdict::BadOverflowIndex || se.verdict == StringVerdict::OutsideFile) {
+            result.emplace_back();  // nothing to read
+        } else if (se.isUTF16) {
+            result.push_back(utf16LeToUtf8(data + se.storageOffset, se.charLength));
+        } else {
+            result.push_back(asciiToString(data + se.storageOffset, se.charLength));
+        }
     }
-
     return result;
 }
 
 std::vector<StringEntry> parseStringEntries(const uint8_t* data,
                                             const HBCFileHeader& hdr,
-                                            const std::vector<StringKind>& kinds) {
-    const auto off = stringSectionOffsets(hdr);
-    const auto* strTable = reinterpret_cast<const SmallStringTableEntry*>(data + off.stringTable);
-    const auto* ovfTable = reinterpret_cast<const OverflowStringTableEntry*>(data + off.overflowTable);
-
-    std::vector<StringEntry> result;
-    result.reserve(hdr.stringCount);
-
-    for (uint32_t i = 0; i < hdr.stringCount; ++i) {
-        const auto& entry = strTable[i];
-        const auto loc = locate(entry, ovfTable, hdr.overflowStringCount,
-                                 hdr.stringStorageSize, i);
-
-        StringEntry se;
-        se.storageOffset = off.stringStorage + loc.offset;
-        se.charLength    = loc.length;
-        se.isUTF16       = entry.isUTF16 != 0;
-        se.byteLength    = se.isUTF16 ? loc.length * 2 : loc.length;
-        se.isOverflow    = loc.isOverflow;
-        se.kind          = i < kinds.size() ? kinds[i] : StringKind::String;
-        result.push_back(se);
-    }
-
+                                            const std::vector<StringKind>& kinds,
+                                            size_t fileSize, ValidationMode mode) {
+    auto result = resolveEntries(data, hdr, fileSize, mode);
+    for (size_t i = 0; i < result.size(); ++i)
+        result[i].kind = i < kinds.size() ? kinds[i] : StringKind::String;
     return result;
 }
 

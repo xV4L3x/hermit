@@ -77,9 +77,16 @@ class HermitProject:
         self._patched = False
 
     @classmethod
-    def from_hbc(cls, hbc_path: str) -> "HermitProject":
+    def from_hbc(cls, hbc_path: str, permissive: bool = False) -> "HermitProject":
+        """`permissive`: open a file with invalid string entries for analysis (read-only)."""
         hbc_path = os.path.abspath(hbc_path)
-        return cls(_libhbc.HBCFile.open(hbc_path), hbc_path)
+        mode = (_libhbc.ValidationMode.Permissive if permissive
+                else _libhbc.ValidationMode.Strict)
+        return cls(_libhbc.HBCFile.open(hbc_path, mode), hbc_path)
+
+    @property
+    def is_permissive(self) -> bool:
+        return self.hbc.validation_mode() == _libhbc.ValidationMode.Permissive
 
     # ------------------------------------------------------------------
     # State
@@ -110,6 +117,11 @@ class HermitProject:
 
     def _commit(self, image, new_hbc: "_libhbc.HBCFile") -> None:
         """The image becomes authoritative."""
+        if self.is_permissive:
+            raise ValueError(
+                "file opened with --permissive is read-only: its string table is "
+                "not consistent, so it cannot be rebuilt (open it without --permissive "
+                "after repairing it)")
         self._image = bytearray(image)
         self.hbc = new_hbc
         self._patched = True

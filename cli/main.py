@@ -11,11 +11,13 @@ def main() -> None:
         description="Hermes Reverse Engineering & Manipulation Interactive Toolkit.",
     )
     parser.add_argument("file", nargs="?", help="HBC file to open (.hbc)")
+    parser.add_argument("--permissive", action="store_true",
+                        help="open files with invalid string entries, read-only (malware analysis)")
     parser.add_argument("--version", action="version", version=f"hermit {__version__}")
     args = parser.parse_args()
 
     from cli.repl import HermitREPL  # imported late: --version/--help don't need the C++ module
-    HermitREPL().run(args.file)
+    HermitREPL().run(args.file, args.permissive)
 
 
 if __name__ == "__main__":

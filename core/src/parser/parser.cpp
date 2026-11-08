@@ -42,6 +42,7 @@ struct HBCFile::Impl {
     int    fd   = -1;
     std::vector<uint8_t> owned;  // from_bytes() only; `data` points into it
     const HBCFileHeader* hdr = nullptr;
+    ValidationMode mode = ValidationMode::Strict;
 
     mutable std::optional<std::vector<std::string>>  strings;
     mutable std::optional<std::vector<FunctionInfo>> functions;
@@ -87,7 +88,7 @@ static const HBCFileHeader* validateHeader(const void* data, size_t size) {
     return hdr;
 }
 
-HBCFile HBCFile::open(const std::string& path) {
+HBCFile HBCFile::open(const std::string& path, ValidationMode mode) {
     auto impl = std::make_shared<Impl>();
 
     impl->fd = ::open(path.c_str(), O_RDONLY);
@@ -107,19 +108,23 @@ HBCFile HBCFile::open(const std::string& path) {
         throw std::runtime_error("mmap failed for '" + path + "': " + std::strerror(errno));
 
     impl->hdr = validateHeader(impl->data, impl->size);
+    impl->mode = mode;
     return HBCFile{std::move(impl)};
 }
 
-HBCFile HBCFile::from_bytes(const std::string& bytes) {
+HBCFile HBCFile::from_bytes(const std::string& bytes, ValidationMode mode) {
     auto impl = std::make_shared<Impl>();
     impl->owned.assign(bytes.begin(), bytes.end());
     impl->data = impl->owned.data();
     impl->size = impl->owned.size();
     impl->hdr  = validateHeader(impl->data, impl->size);
+    impl->mode = mode;
     return HBCFile{std::move(impl)};
 }
 
 HBCFile::HBCFile(std::shared_ptr<Impl> impl) : impl_(std::move(impl)) {}
+
+ValidationMode HBCFile::validation_mode() const { return impl_->mode; }
 
 uint32_t HBCFile::version() const { return impl_->hdr->version; }
 
@@ -141,7 +146,7 @@ std::vector<uint8_t> HBCFile::serialize() const {
 
 const std::vector<std::string>& HBCFile::strings() const {
     if (!impl_->strings)
-        impl_->strings = parseStringTable(raw_data(), header());
+        impl_->strings = parseStringTable(raw_data(), header(), raw_size(), impl_->mode);
     return *impl_->strings;
 }
 
@@ -170,7 +175,8 @@ const std::vector<StringKind>& HBCFile::stringKinds() const {
 
 const std::vector<StringEntry>& HBCFile::string_entries() const {
     if (!impl_->stringEntries)
-        impl_->stringEntries = parseStringEntries(raw_data(), header(), stringKinds());
+        impl_->stringEntries = parseStringEntries(raw_data(), header(), stringKinds(),
+                                                  raw_size(), impl_->mode);
     return *impl_->stringEntries;
 }
 
