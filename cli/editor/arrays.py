@@ -13,6 +13,8 @@ from prompt_toolkit.filters import Condition
 from prompt_toolkit.formatted_text import ANSI
 from prompt_toolkit.key_binding import KeyBindings
 
+from _libhbc import StringKind
+
 from cli import display
 from cli.editor.common import (
     CURSOR_STYLE, ERR_STYLE, HINT_STYLE, TextBufferMixin, apply_discard_cancel_bar,
@@ -31,6 +33,19 @@ _SLP_TAG_ORDER = (
 _STRING_TAGS = (SLPTag.SHORT_STRING, SLPTag.BYTE_STRING, SLPTag.LONG_STRING)
 
 
+def key_kind_error(string_idx, kinds):
+    """Error message if `string:<string_idx>` can't be an object-literal key, else
+    "". The VM turns each key into a symbol with `ID()`, and symbols exist only
+    for Identifier entries: a String-kind key crashes the VM (SIGSEGV on v96).
+    `kinds` None skips the check."""
+    if kinds is None or not 0 <= string_idx < len(kinds):
+        return ""
+    if kinds[string_idx] == StringKind.Identifier:
+        return ""
+    return (f"string:{string_idx} is a String, not an Identifier: an object key must be "
+            "an Identifier (`edit identifier:new` creates one)")
+
+
 class ArrayEditState(TextBufferMixin):
     """State of the array/object editor. `values` / `keys` are `SLPValue`s with
     `byte_off` ABSOLUTE in the file (decoded by the caller).
@@ -43,10 +58,11 @@ class ArrayEditState(TextBufferMixin):
 
     A session is EITHER element edits OR a single add/remove (`pending_add` /
     `pending_remove`), never both. The key of a new pair must reference an
-    existing string."""
+    existing Identifier string: the VM reads object-literal keys as symbols,
+    which exist only for Identifier entries (`kinds`, when given)."""
 
     def __init__(self, site_idx, site, values, keys, strings, funcs, *,
-                 context_bytes=b"", context_base=0,
+                 kinds=None, context_bytes=b"", context_base=0,
                  is_shared=False, shared_with=()):
         self.site_idx = site_idx
         self.site = site
@@ -54,6 +70,7 @@ class ArrayEditState(TextBufferMixin):
         self.orig_values = list(values)   # PRE-session snapshot, never mutated
         self.keys = list(keys) if keys is not None else None
         self.strings = list(strings)
+        self.kinds = list(kinds) if kinds is not None else None
         self.funcs = list(funcs)
 
         self.sel = 0                  # index in self.values
@@ -183,6 +200,10 @@ class ArrayEditState(TextBufferMixin):
             return
 
         if self.add_stage == "key":
+            err = key_kind_error(decode_value_bytes(self.edit_tag, enc), self.kinds)
+            if err:
+                self.edit_err = err
+                return
             self.add_key_tag = self.edit_tag
             self.add_key_bytes = enc
             self.add_stage = "value"
@@ -296,14 +317,14 @@ class ArrayEditState(TextBufferMixin):
 
 
 def run_array_editor(site_idx=0, site=None, values=(), keys=None, strings=(),
-                     funcs=(), *, context_bytes=b"", context_base=0,
+                     funcs=(), *, kinds=None, context_bytes=b"", context_base=0,
                      is_shared=False, shared_with=(),
                      _input=None, _output=None, _state=None) -> "ArrayEditState":
     """Full-screen editor for a literal site; returns the state on exit. A buffer
     shared with other sites (`is_shared` / `shared_with`) shows a banner and the
     commit detaches it via relocation. `_input/_output/_state` are for headless tests."""
     state = _state if _state is not None else ArrayEditState(
-        site_idx, site, values, keys, strings, funcs,
+        site_idx, site, values, keys, strings, funcs, kinds=kinds,
         context_bytes=context_bytes, context_base=context_base,
         is_shared=is_shared, shared_with=shared_with)
 

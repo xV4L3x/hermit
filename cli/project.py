@@ -5,10 +5,80 @@ import os
 from typing import Optional
 
 import _libhbc
-from cli.literals import decode_slp
+from cli.literals import _STRING_TAGS as _SLP_STRING_TAGS, decode_slp
 
 _FOOTER = 20  # SHA-1 footer, the last 20 bytes of the file
 
+
+
+# Opcodes whose string operand is a property/global NAME: the VM reads it as a
+# symbol (`getSymbolIDMustExist`), so it must reference an Identifier entry.
+# Every OPERAND_STRING_ID of BytecodeList.def (v96) except LoadConstString* and
+# CreateRegExp.
+IDENTIFIER_OPCODES = frozenset({
+    "DeclareGlobalVar", "ThrowIfHasRestrictedGlobalProperty",
+    "GetByIdShort", "GetById", "GetByIdLong", "TryGetById", "TryGetByIdLong",
+    "PutById", "PutByIdLong", "TryPutById", "TryPutByIdLong",
+    "PutNewOwnByIdShort", "PutNewOwnById", "PutNewOwnByIdLong",
+    "PutNewOwnNEById", "PutNewOwnNEByIdLong", "DelById", "DelByIdLong",
+})
+
+_UINT_MAX = {"UInt8": 0xFF, "UInt16": 0xFFFF, "UInt32": 0xFFFFFFFF}
+
+# Get/Put-by-id opcodes with a property-cache index (operand 2, UInt8; 0 =
+# PROPERTY_CACHING_DISABLED in BytecodeFileFormat.h).
+_CACHED_BY_ID = ("GetById", "TryGetById", "PutById", "TryPutById")
+_CACHE_OPERAND = 2
+
+
+def _operand_value(o) -> float:
+    T = _libhbc.OperandType
+    if o.type in (T.Imm32, T.Addr8, T.Addr32):
+        return float(o.i32)
+    if o.type == T.Double:
+        return o.f64
+    return float(o.u32)
+
+
+def _widen_for_index(by_mn: dict, desc, pos: int, idx: int):
+    """`desc` if string index `idx` fits its operand `pos`, else the first wider
+    variant (`XShort` -> `X` -> `XLong`) with the same operands where it fits.
+    Never narrows."""
+    def fits(d):
+        return idx <= _UINT_MAX.get(d.operands[pos].name, 0)
+    if fits(desc):
+        return desc
+    mn = desc.mnemonic
+    base = mn[:-5] if mn.endswith("Short") else mn[:-4] if mn.endswith("Long") else mn
+    chain = [base + "Short", base, base + "Long"]
+    for cand in chain[chain.index(mn) + 1:] if mn in chain else []:
+        d = by_mn.get(cand)
+        if d is not None and len(d.operands) == len(desc.operands) and fits(d):
+            return d
+    raise ValueError(f"string index {idx} does not fit any variant of {mn}")
+
+
+def _ir_from_disasm(instrs, by_mn: dict) -> list:
+    """A function's disassembly as the AsmInstr tuples of `apply_insertion`
+    (`(opcode, operands, jump_target_idx, addr_operand_pos, orig_byte_offset)`):
+    jumps refer to their target by instruction index, so a size change is
+    relocated by `Module`."""
+    at = {ins.offset: k for k, ins in enumerate(instrs)}
+    ir = []
+    for ins in instrs:
+        d = by_mn[ins.mnemonic]
+        if d.jump_kind == "Switch":
+            raise ValueError("the function contains SwitchImm (not supported by the relocation)")
+        values = [_operand_value(o) for o in ins.operands]
+        jt, ap = -1, -1
+        if d.jump_kind in ("Unconditional", "Conditional"):
+            ap = 0
+            tgt = ins.offset + int(values[0])
+            if tgt not in at:
+                raise ValueError(f"jump at {ins.offset:#x} to {tgt:#x}: not an instruction start")
+            jt = at[tgt]
+        ir.append((ins.opcode, values, jt, ap, int(ins.offset)))
+    return ir
 
 def _entry_key(e) -> tuple:
     return (e.storage_offset, e.byte_length, e.char_length,
@@ -25,6 +95,15 @@ def _site_full(s) -> tuple:
 
 def _decode_site(buf: bytes, start: int, count: int) -> list:
     return decode_slp(buf, start, count) if count else []
+
+
+def _key_text(key, strings) -> str:
+    """Property name of an object-literal key: the string's text, or the number
+    (the VM turns a number key into the symbol of its decimal form)."""
+    if key.tag in _SLP_STRING_TAGS:
+        return str(strings[key.value])
+    v = key.value
+    return str(int(v)) if float(v).is_integer() else str(v)
 
 
 def _tag_values(elems) -> list:
@@ -235,7 +314,8 @@ class HermitProject:
         e = entries0[str_idx]
         if kinds0[str_idx] == _libhbc.StringKind.Identifier:
             raise ValueError(
-                "Identifier string: overwriting it desyncs the Identifier Hash Table")
+                "Identifier string: the in-place overwrite leaves its hash stale - "
+                "use apply_string_relocation")
         if len(new_bytes) != e.byte_length:
             raise ValueError(
                 f"length {len(new_bytes)} B ≠ {e.byte_length} B original "
@@ -389,21 +469,51 @@ class HermitProject:
     # Structural edits, through Module (the image is rebuilt)
     # ------------------------------------------------------------------
 
+    def object_key_clashes(self, str_idx: int, new_name: str) -> list:
+        """Object-literal sites (`array:N`) that have `string:<str_idx>` as a key
+        AND another key named `new_name`. Renaming the Identifier to `new_name`
+        would repeat a key in those literals: the VM builds a hidden class with
+        one property less than the values and stores the values by position, so
+        they shift (`{alpha:1, gamma:3, zz:5}` with gamma -> alpha prints
+        `{"alpha":1,"zz":3}`)."""
+        strings = list(self.hbc.strings())
+        key_buf = self.hbc.obj_key_buffer()
+        out = []
+        for i, site in enumerate(self.hbc.literal_sites()):
+            if not site.is_object or not site.count:
+                continue
+            keys = _decode_site(key_buf, site.key_buffer_idx, site.count)
+            if not any(k.tag in _SLP_STRING_TAGS and k.value == str_idx for k in keys):
+                continue
+            others = {_key_text(k, strings) for k in keys
+                      if not (k.tag in _SLP_STRING_TAGS and k.value == str_idx)}
+            if new_name in others:
+                out.append(i)
+        return out
+
     def apply_string_relocation(self, str_idx: int, new_bytes: bytes, expected_value: str) -> None:
         """Changes the CONTENT (and so the length) of a string: the new bytes go
         to the end of the string storage and only that entry is repointed.
         The append never touches existing bytes, so a shared entry is detached
         implicitly and no overlap scan is needed (unlike `apply_string_patch`).
-        `new_bytes` comes from `encode_string_new_value`."""
+        `new_bytes` comes from `encode_string_new_value`.
+        On an Identifier this is a rename: every site that references the entry
+        sees the new name, and its hash in the Identifier Hash Table is rewritten."""
         entries0 = list(self.hbc.string_entries())
         kinds0   = list(self.hbc.string_kinds())
         strings0 = list(self.hbc.strings())
         h0 = self.hbc.header()
 
         _check_index(str_idx, len(entries0), "string index")
+        hashes0 = list(self.hbc.identifier_hashes())
         if kinds0[str_idx] == _libhbc.StringKind.Identifier:
-            raise ValueError(
-                "Identifier string: overwriting it desyncs the Identifier Hash Table")
+            clash = self.object_key_clashes(str_idx, expected_value)
+            if clash:
+                raise ValueError(
+                    f"\"{expected_value}\" is already a key of the object literal"
+                    f"{'s' if len(clash) > 1 else ''} "
+                    f"{', '.join(f'array:{i}' for i in clash)} that also has "
+                    f"\"{strings0[str_idx]}\": the object would have that key twice")
 
         new_image, new_hbc, _ = self._structural(
             "relocated string", lambda m: m.set_string_value(str_idx, new_bytes))
@@ -411,7 +521,7 @@ class HermitProject:
         h1 = new_hbc.header()
         _check_file_length(h1, len(new_image))
         _check_fields_unchanged(h0, h1, ("string_count", "string_kind_count",
-                                         "overflow_string_count"))
+                                         "overflow_string_count", "identifier_count"))
         if h1.string_storage_size != h0.string_storage_size + len(new_bytes):
             raise ValueError(
                 f"string_storage_size {h1.string_storage_size} ≠ "
@@ -425,17 +535,43 @@ class HermitProject:
                 raise ValueError(
                     f"string_entries[{j}] changed - only string:{str_idx} should move")
 
+        # Identifier Hash Table: only the renamed Identifier's hash changes.
+        exp_hashes = hashes0
+        if kinds0[str_idx] == _libhbc.StringKind.Identifier:
+            ordinal = sum(1 for k in kinds0[:str_idx] if k == _libhbc.StringKind.Identifier)
+            exp_hashes = list(hashes0)
+            exp_hashes[ordinal] = _libhbc.identifier_hash(new_bytes, entries0[str_idx].is_utf16)
+        if list(new_hbc.identifier_hashes()) != exp_hashes:
+            raise ValueError("set_string_value left the Identifier Hash Table out of sync")
+
         self._check_disasm_sample(new_hbc, h0, "set_string_value")
         self._commit(new_image, new_hbc)
 
     def apply_add_string(self, value: str) -> int:
         """Appends a new `String`-kind string (the kind table, string table and
         storage grow, every later section is re-laid-out). Returns its index."""
+        return self._apply_add(value, _libhbc.StringKind.String)
+
+    def apply_add_identifier(self, value: str) -> int:
+        """Appends a new `Identifier`-kind string, a name that GetById/PutById/...
+        can reference: as `apply_add_string`, plus its hash at the end of the
+        Identifier Hash Table and `identifier_count` + 1. Refused if an Identifier
+        with the same text exists. Returns its index."""
+        for i, (s, k) in enumerate(zip(self.hbc.strings(), self.hbc.string_kinds())):
+            if k == _libhbc.StringKind.Identifier and str(s) == value:
+                raise ValueError(f"identifier {value!r} already exists: string:{i}")
+        return self._apply_add(value, _libhbc.StringKind.Identifier)
+
+    def _apply_add(self, value: str, kind) -> int:
+        is_id = kind == _libhbc.StringKind.Identifier
+        what = "add_identifier" if is_id else "add_string"
         h0 = self.hbc.header()
         strings0 = list(self.hbc.strings())
         kinds0   = list(self.hbc.string_kinds())
+        hashes0  = list(self.hbc.identifier_hashes())
 
-        new_image, new_hbc, idx = self._structural("add_string", lambda m: m.add_string(value))
+        new_image, new_hbc, idx = self._structural(
+            what, (lambda m: m.add_identifier(value)) if is_id else (lambda m: m.add_string(value)))
 
         enc = value.encode("ascii")
         h1 = new_hbc.header()
@@ -460,12 +596,20 @@ class HermitProject:
             raise ValueError(
                 f"re-parse: string[{idx}] = {strings1[idx]!r} ≠ expected {value!r}")
         if strings1[:idx] != strings0:
-            raise ValueError("add_string altered a pre-existing string")
+            raise ValueError(f"{what} altered a pre-existing string")
         kinds1 = list(new_hbc.string_kinds())
-        if kinds1[:idx] != kinds0 or kinds1[idx] != _libhbc.StringKind.String:
-            raise ValueError("add_string altered the string kind table")
+        if kinds1[:idx] != kinds0 or kinds1[idx] != kind:
+            raise ValueError(f"{what} altered the string kind table")
 
-        self._check_disasm_sample(new_hbc, h0, "add_string")
+        # Identifier Hash Table: unchanged by add_string; one more hash, of the
+        # new name, at the end for add_identifier.
+        exp_hashes = hashes0 + ([_libhbc.identifier_hash(enc)] if is_id else [])
+        if h1.identifier_count != len(exp_hashes):
+            raise ValueError(f"identifier_count {h1.identifier_count} ≠ {len(exp_hashes)}")
+        if list(new_hbc.identifier_hashes()) != exp_hashes:
+            raise ValueError(f"{what} left the Identifier Hash Table out of sync")
+
+        self._check_disasm_sample(new_hbc, h0, what)
         self._commit(new_image, new_hbc)
         return idx
 
@@ -555,6 +699,22 @@ class HermitProject:
             raise ValueError(f"array:{site_idx} has no elements to remove")
 
         expected_count = site0.count + (1 if is_add else -1)
+        if is_object and is_add:
+            # The VM reads object-literal keys as symbols (`ID()`): a key that
+            # names a String-kind entry crashes it.
+            new_keys = decode_slp(new_key_buffer_bytes, 0, expected_count)
+            new_key = new_keys[-1]
+            if new_key.tag in _SLP_STRING_TAGS:
+                if self.hbc.string_kinds()[new_key.value] != _libhbc.StringKind.Identifier:
+                    raise ValueError(
+                        f"object key string:{new_key.value} is not an Identifier "
+                        "(`edit identifier:new` creates one)")
+            # A repeated key gives a hidden class with fewer slots than values:
+            # the VM writes the values by position, past the last property.
+            strings = list(self.hbc.strings())
+            name = _key_text(new_key, strings)
+            if name in {_key_text(k, strings) for k in new_keys[:-1]}:
+                raise ValueError(f"array:{site_idx} already has the key \"{name}\"")
 
         h0 = self.hbc.header()
         old_val_buf = self.hbc.obj_value_buffer() if is_object else self.hbc.array_buffer()
@@ -666,6 +826,66 @@ class HermitProject:
 
         self._commit(new_image, new_hbc)
         return list(m.warnings())
+
+    def apply_rename_site(self, func_idx: int, instr_offset: int, new_str_idx: int) -> str:
+        """Re-points the name operand of ONE instruction (GetById, PutById, ... -
+        `IDENTIFIER_OPCODES`) to the Identifier `new_str_idx`: a rename at that
+        site only. When the index doesn't fit the operand the opcode is widened
+        (`*Short` -> base -> `*Long`) and the body goes through `Module`
+        (`set_function_body`, jump relocation); otherwise the instruction is
+        re-encoded in place. A Get/Put-by-id site also gets cache index 0 (no
+        property cache): the slot it had is shared with the other sites of the
+        old name. Refused on shared bytecode (cloning one function of the group
+        is bonus B12). Returns the mnemonic now at the site."""
+        funcs = self.hbc.functions()
+        _check_index(func_idx, len(funcs), "function index")
+        f = funcs[func_idx]
+        if f.shared:
+            raise ValueError(
+                f"func[{func_idx}] has shared bytecode (×{f.shareCount}): changing one site "
+                "would change it in every function of the group - cloning one function is "
+                "not supported (bonus B12)")
+        kinds = self.hbc.string_kinds()
+        _check_index(new_str_idx, len(kinds), "string index")
+        if kinds[new_str_idx] != _libhbc.StringKind.Identifier:
+            raise ValueError(f"string:{new_str_idx} is not an Identifier")
+
+        version = self.hbc.version()
+        table = list(_libhbc.opcode_table(version))
+        by_mn = {d.mnemonic: d for d in table if d.mnemonic}
+        instrs = list(self.hbc.disasm(func_idx))
+        k = next((i for i, ins in enumerate(instrs) if ins.offset == instr_offset), None)
+        if k is None:
+            raise ValueError(f"func[{func_idx}]: no instruction at {instr_offset:#x}")
+        ins = instrs[k]
+        if ins.mnemonic not in IDENTIFIER_OPCODES:
+            raise ValueError(f"{ins.mnemonic} at {instr_offset:#x} does not name a property")
+        desc = by_mn[ins.mnemonic]
+        pos = next(i for i in range(len(desc.operands)) if (desc.string_ref_mask >> i) & 1)
+
+        new_desc = _widen_for_index(by_mn, desc, pos, new_str_idx)
+        values = [_operand_value(o) for o in ins.operands]
+        values[pos] = float(new_str_idx)
+        # The compiler gives every site of the same name one property-cache slot
+        # (ISel.cpp, acquirePropertyRead/WriteCacheIndex). A re-pointed site that
+        # kept the slot would hit the entry filled by the old name and read or
+        # write that property: caching is disabled for it (0 = no cache).
+        if ins.mnemonic.startswith(_CACHED_BY_ID):
+            values[_CACHE_OPERAND] = 0.0
+
+        if new_desc.opcode == desc.opcode:
+            blob = bytes(_libhbc.encode_instruction(version, desc.opcode, values))
+            self.apply_patch(func_idx, {f.offset + instr_offset: blob})
+        else:
+            ir = _ir_from_disasm(instrs, by_mn)
+            op, _, jt, ap, orig = ir[k]
+            ir[k] = (new_desc.opcode, values, jt, ap, orig)
+            self.apply_insertion(func_idx, ir, f.frameSize)
+
+        after = self.hbc.disasm(func_idx)[k]
+        if after.mnemonic != new_desc.mnemonic or after.operands[pos].u32 != new_str_idx:
+            raise ValueError("integrity: the re-pointed operand was not found after the commit")
+        return after.mnemonic
 
     def apply_add_function(self, asm_instrs, frame_size: int) -> int:
         """Adds a NEW function at the end of the function table. `asm_instrs`

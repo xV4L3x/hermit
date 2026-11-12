@@ -335,16 +335,24 @@ void Module::set_function_body(uint32_t funcIdx, std::vector<AsmInstr> ir,
     fsRef.newFrameSize = frameSize;
 }
 
-uint32_t Module::add_string(const std::string& value) {
+uint32_t Module::queueNewString(const char* who, const std::string& value, StringKind kind) {
     if (value.empty())
-        throw std::invalid_argument("Module::add_string: empty string");
+        throw std::invalid_argument(std::string(who) + ": empty string");
     for (unsigned char c : value)
         if (c >= 0x80)
             throw std::invalid_argument(
-                "Module::add_string: non-ASCII character - only ASCII strings can be "
+                std::string(who) + ": non-ASCII character - only ASCII strings can be "
                 "added (a string with other characters is stored as UTF-16, not supported)");
-    pendingStrings_.push_back(value);
+    pendingStrings_.push_back({value, kind});
     return origStringCount_ + static_cast<uint32_t>(pendingStrings_.size()) - 1;
+}
+
+uint32_t Module::add_string(const std::string& value) {
+    return queueNewString("Module::add_string", value, StringKind::String);
+}
+
+uint32_t Module::add_identifier(const std::string& value) {
+    return queueNewString("Module::add_identifier", value, StringKind::Identifier);
 }
 
 void Module::set_string_value(uint32_t idx, const std::string& newBytes) {
@@ -393,7 +401,33 @@ void Module::set_string_value(uint32_t idx, const std::string& newBytes) {
         }
     }
 
-    pendingStringEdit_ = PendingStringEdit{idx, newBytes, isUTF16, wasOverflow, ovfSlot};
+    // Kind of the entry and, for an Identifier, its position in the hash table:
+    // the number of Identifier entries before it (the VM pairs hashes with
+    // Identifier entries in string-table order).
+    bool     isIdentifier = false;
+    uint32_t idOrdinal    = 0;
+    {
+        uint32_t strPos = 0;
+        for (size_t r = 0; r + 4 <= kindTable_.size(); r += 4) {
+            uint32_t run;
+            std::memcpy(&run, kindTable_.data() + r, 4);
+            const uint32_t n     = run & 0x7FFFFFFFu;
+            const bool     ident = (run >> 31) != 0;
+            if (idx < strPos + n) {
+                isIdentifier = ident;
+                if (ident) idOrdinal += idx - strPos;
+                break;
+            }
+            if (ident) idOrdinal += n;
+            strPos += n;
+        }
+        if (isIdentifier && idOrdinal >= idHash_.size() / 4)
+            throw std::runtime_error(
+                "Module::set_string_value: identifier hash index out of range");
+    }
+
+    pendingStringEdit_ = PendingStringEdit{idx, newBytes, isUTF16, wasOverflow, ovfSlot,
+                                           isIdentifier, idOrdinal};
 }
 
 Module::LiteralTarget Module::locateLiteralSite(
@@ -594,6 +628,7 @@ uint32_t Module::add_function(std::vector<AsmInstr> ir, uint32_t frameSize) {
 Module::StringSections Module::buildStringSections() const {
     StringSections ss;
     ss.kindTable     = kindTable_;
+    ss.idHash        = idHash_;
     ss.stringTable   = stringTable_;
     ss.overflowTable = overflowTable_;
     ss.storage       = stringStorage_;
@@ -604,7 +639,8 @@ Module::StringSections Module::buildStringSections() const {
     const uint32_t k = static_cast<uint32_t>(pendingStrings_.size());
     if (k > 0) {
         uint32_t addedOverflow = 0;
-        for (const std::string& s : pendingStrings_) {
+        for (const PendingString& ps : pendingStrings_) {
+            const std::string& s = ps.value;
             const uint32_t offRel = static_cast<uint32_t>(ss.storage.size());
             const uint32_t len    = static_cast<uint32_t>(s.size());
             ss.storage.insert(ss.storage.end(), s.begin(), s.end());
@@ -625,22 +661,30 @@ Module::StringSections Module::buildStringSections() const {
             }
         }
 
-        // Kind table is RLE: the new strings are all kind String and
-        // contiguous at the end, so extend the last run if it is String,
-        // otherwise start a new run.
-        bool extended = false;
-        if (!ss.kindTable.empty()) {
-            uint32_t last;
-            std::memcpy(&last, ss.kindTable.data() + ss.kindTable.size() - 4, 4);
-            if ((last >> 31) == 0) {
-                const uint32_t merged = ((last & 0x7FFFFFFFu) + k) & 0x7FFFFFFFu;
-                std::memcpy(ss.kindTable.data() + ss.kindTable.size() - 4, &merged, 4);
-                extended = true;
+        // Kind table is RLE, one run per stretch of same-kind strings (bit 31 =
+        // Identifier). The new strings are contiguous at the end: each extends
+        // the last run if it has the same kind, otherwise opens a new one.
+        // Every Identifier also appends its hash: the VM pairs the hashes with
+        // the Identifier entries in string-table order.
+        for (const PendingString& ps : pendingStrings_) {
+            const uint32_t kindBit = (ps.kind == StringKind::Identifier) ? 1u : 0u;
+            bool extended = false;
+            if (!ss.kindTable.empty()) {
+                uint32_t last;
+                std::memcpy(&last, ss.kindTable.data() + ss.kindTable.size() - 4, 4);
+                if ((last >> 31) == kindBit && (last & 0x7FFFFFFFu) < 0x7FFFFFFFu) {
+                    ++last;
+                    std::memcpy(ss.kindTable.data() + ss.kindTable.size() - 4, &last, 4);
+                    extended = true;
+                }
             }
-        }
-        if (!extended) {
-            appendU32(ss.kindTable, k & 0x7FFFFFFFu);
-            ++ss.kindCount;
+            if (!extended) {
+                appendU32(ss.kindTable, (kindBit << 31) | 1u);
+                ++ss.kindCount;
+            }
+            if (ps.kind == StringKind::Identifier)
+                appendU32(ss.idHash, identifier_hash(
+                    reinterpret_cast<const uint8_t*>(ps.value.data()), ps.value.size(), false));
         }
 
         ss.stringCount   += k;
@@ -670,6 +714,13 @@ Module::StringSections Module::buildStringSections() const {
             std::memcpy(ss.overflowTable.data() + pe.ovfSlot * 8 + 0, &offRel,     4);
             std::memcpy(ss.overflowTable.data() + pe.ovfSlot * 8 + 4, &newCharLen, 4);
         }
+
+        if (pe.isIdentifier) {
+            const uint32_t h = identifier_hash(
+                reinterpret_cast<const uint8_t*>(pe.newBytes.data()), pe.newBytes.size(),
+                pe.isUTF16);
+            std::memcpy(ss.idHash.data() + pe.idOrdinal * 4, &h, 4);
+        }
     }
 
     return ss;
@@ -691,7 +742,7 @@ std::vector<uint8_t> Module::serialize() {
                        pendingNewFunction_.has_value();
     if (queued > 1)
         throw std::runtime_error(
-            "Module: structural operations (set_function_body, add_string, "
+            "Module: structural operations (set_function_body, add_string/add_identifier, "
             "set_string_value, set_literal_value, resize_literal, add_function) "
             "cannot be combined in the same serialize - do two separate commits");
 
@@ -770,7 +821,7 @@ std::vector<uint8_t> Module::serialize() {
     //    storage, mid sections (each with its alignment), bytecode (align 4).
     uint32_t lp = newFuncTableEnd;
     lp += static_cast<uint32_t>(ss.kindTable.size());
-    lp += static_cast<uint32_t>(idHash_.size());
+    lp += static_cast<uint32_t>(ss.idHash.size());
     lp += static_cast<uint32_t>(ss.stringTable.size());
     lp += static_cast<uint32_t>(ss.overflowTable.size());
     lp += static_cast<uint32_t>(ss.storage.size());
@@ -936,6 +987,7 @@ std::vector<uint8_t> Module::serialize() {
     hdr->debugInfoOffset     = static_cast<uint32_t>(newDbgOff);
     hdr->stringCount         = ss.stringCount;
     hdr->stringKindCount     = ss.kindCount;
+    hdr->identifierCount     = static_cast<uint32_t>(ss.idHash.size() / 4);
     hdr->stringStorageSize   = static_cast<uint32_t>(ss.storage.size());
     hdr->overflowStringCount = ss.overflowCount;
     hdr->functionCount       = count + (pendingNewFunction_ ? 1u : 0u);
@@ -961,7 +1013,7 @@ std::vector<uint8_t> Module::serialize() {
     put(funcHeaders_);
     put(newFuncHeaderBytes);
     put(ss.kindTable);
-    put(idHash_);
+    put(ss.idHash);
     put(ss.stringTable);
     put(ss.overflowTable);
     put(ss.storage);

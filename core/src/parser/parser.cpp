@@ -220,6 +220,16 @@ const std::vector<BigIntInfo>& HBCFile::bigints() const {
     return *impl_->bigInts;
 }
 
+std::vector<uint32_t> HBCFile::identifier_hashes() const {
+    const uint32_t off   = stringSectionOffsets(header()).identifierHashes;
+    const uint32_t count = header().identifierCount;
+    if (uint64_t(off) + uint64_t(count) * 4 > raw_size())
+        throw std::runtime_error("Identifier Hash Table extends past the end of the file");
+    std::vector<uint32_t> out(count);
+    if (count) std::memcpy(out.data(), raw_data() + off, size_t(count) * 4);
+    return out;
+}
+
 const std::vector<LiteralSite>& HBCFile::literal_sites() const {
     if (!impl_->literalSites)
         impl_->literalSites = computeLiteralSites(*this);

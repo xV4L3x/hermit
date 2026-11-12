@@ -216,7 +216,8 @@ by index or value (`string:42`, `string:"hello"`), literal sites by index
 | `decompile func:<N\|name>` | Decompiled JavaScript. |
 | `decompile all [--output=<dir>]` | Decompile every function to `.js` files. |
 | `edit func:<N\|name\|new>` | Bytecode editor; `func:new` builds a new function. |
-| `edit string:<idx\|value\|new>` | String editor; `string:new` adds a string. |
+| `edit string:<idx\|value\|new>` | String editor; `string:new` adds a string. On an Identifier it renames the property at every site, or at one chosen site (`O` in the prompt). |
+| `edit identifier:new` | Adds an Identifier (a property or global name for `GetById`/`PutById`/...). |
 | `edit array:<N>` | Array and object literal editor. |
 | `patch [file.hbc]` | Writes the edited image to a new file. |
 | `help`, `exit` | Help and quit. |
@@ -258,6 +259,8 @@ they are tied to a hash table.
 **Literal editor** (`edit array:`): select an element with Up and Down and press
 `Enter` to retype it. `Ctrl+T` changes its type (including `null`, `true` and
 `false`), `a` appends an element or key-value pair and `d` removes the last one.
+The key of a new pair is `string:N` of an Identifier that is not already a key of
+that object (`edit identifier:new` creates a new one).
 
 **Shared bytecode.** Metro and Hermes store identical function bodies once, so
 several functions can point to the same bytes. The editor warns about it and

@@ -127,12 +127,11 @@ def test_encode_string_relocation_commit_noop_when_unchanged():
     assert encode_string_relocation_commit(st) is None
 
 
-def test_encode_string_relocation_commit_rejects_identifier():
+def test_encode_string_relocation_commit_accepts_identifier():
     proj = load_project("hello.hbc")
     st = _state(proj, _idx(proj, "log"))
     st.value = "LOG"
-    with pytest.raises(_StrEditError, match="Identifier"):
-        encode_string_relocation_commit(st)
+    assert encode_string_relocation_commit(st) == b"LOG"
 
 
 # --- headless editor: shared entry always opens, shows a banner --------
@@ -222,12 +221,19 @@ def test_empty_entry_grows_into_real_string():
 # --- apply_string_relocation: other invariants -------------------------
 
 
-def test_apply_string_relocation_rejects_identifier():
+def test_apply_string_relocation_renames_identifier():
     proj = load_project("hello.hbc")
     idx = _idx(proj, "log")
-    with pytest.raises(ValueError, match="Identifier"):
-        proj.apply_string_relocation(idx, b"LOG", "LOG")
-    assert proj.is_patched is False
+    hashes0 = list(proj.hbc.identifier_hashes())
+    proj.apply_string_relocation(idx, b"LOG", "LOG")
+    assert proj.is_patched is True
+    assert proj.hbc.strings()[idx] == "LOG"
+    assert proj.hbc.string_kinds()[idx] == _libhbc.StringKind.Identifier
+    ordinal = sum(1 for k in list(proj.hbc.string_kinds())[:idx]
+                  if k == _libhbc.StringKind.Identifier)
+    hashes1 = list(proj.hbc.identifier_hashes())
+    assert hashes1[ordinal] == _libhbc.identifier_hash(b"LOG")
+    assert hashes1[:ordinal] + hashes1[ordinal + 1:] == hashes0[:ordinal] + hashes0[ordinal + 1:]
 
 
 def test_apply_string_relocation_rejects_out_of_range():

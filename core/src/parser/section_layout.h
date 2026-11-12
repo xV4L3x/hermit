@@ -21,6 +21,7 @@ inline uint32_t alignUp(uint32_t n, uint32_t a) {
 // tables are multiples of 4 bytes, so no padding sits between them.
 struct StringSectionOffsets {
     uint32_t kindTable;
+    uint32_t identifierHashes;
     uint32_t stringTable;
     uint32_t overflowTable;
     uint32_t stringStorage;
@@ -29,8 +30,8 @@ struct StringSectionOffsets {
 inline StringSectionOffsets stringSectionOffsets(const HBCFileHeader& hdr) {
     StringSectionOffsets o;
     o.kindTable = alignUp(sizeof(HBCFileHeader) + hdr.functionCount * sizeof(SmallFuncHeader), 4);
-    const uint32_t identifierHashes = alignUp(o.kindTable + hdr.stringKindCount * 4, 4);
-    o.stringTable   = alignUp(identifierHashes + hdr.identifierCount * 4, 4);
+    o.identifierHashes = alignUp(o.kindTable + hdr.stringKindCount * 4, 4);
+    o.stringTable   = alignUp(o.identifierHashes + hdr.identifierCount * 4, 4);
     o.overflowTable = o.stringTable   + hdr.stringCount         * sizeof(SmallStringTableEntry);
     o.stringStorage = o.overflowTable + hdr.overflowStringCount * sizeof(OverflowStringTableEntry);
     return o;

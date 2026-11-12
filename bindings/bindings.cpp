@@ -133,6 +133,15 @@ PYBIND11_MODULE(_libhbc, m) {
     ;
     m.def("opcode_table", &hbc::opcode_table,
           "Complete opcode table (list[OpcodeDesc]) for an HBC version");
+    m.def("identifier_hash",
+          [](const py::bytes& b, bool isUTF16) {
+              const std::string s = b;
+              return hbc::identifier_hash(reinterpret_cast<const uint8_t*>(s.data()),
+                                          s.size(), isUTF16);
+          },
+          py::arg("data"), py::arg("is_utf16") = false,
+          "Hermes's Identifier Hash Table hash of an encoded string (ASCII bytes, "
+          "or UTF-16LE when is_utf16). ValueError on an odd UTF-16 length.");
     m.def("operand_size", &hbc::operand_size,
           "Size in bytes of a physical operand type");
     m.def("encode_instruction",
@@ -173,6 +182,10 @@ PYBIND11_MODULE(_libhbc, m) {
              "Appends a new String-kind string; returns the index it will have "
              "in the serialized file. ValueError if empty or non-ASCII. "
              "Cannot be combined with other edits in the same Module.")
+        .def("add_identifier", &hbc::Module::add_identifier, py::arg("value"),
+             "Appends a new Identifier-kind string (and its hash); returns the "
+             "index it will have in the serialized file. ValueError if empty or "
+             "non-ASCII. Can share a Module only with add_string.")
         .def("set_string_value",
              [](hbc::Module& self, uint32_t idx, const py::bytes& newBytes) {
                  self.set_string_value(idx, static_cast<std::string>(newBytes));
@@ -299,6 +312,7 @@ PYBIND11_MODULE(_libhbc, m) {
         .def("recover_modules",    &hbc::HBCFile::recover_modules)
         .def("cjs_modules",        &hbc::HBCFile::cjs_modules)
         .def("bigints",            &hbc::HBCFile::bigints)
+        .def("identifier_hashes",  &hbc::HBCFile::identifier_hashes)
         .def("source_files", [](const hbc::HBCFile& self) { return decodeUtf8List(self.source_files()); })
         .def("source_locations", &hbc::HBCFile::source_locations)
         .def("decompile",        &hbc::HBCFile::decompile)

@@ -69,6 +69,14 @@ public:
     // Throws std::invalid_argument if `value` is empty or non-ASCII.
     uint32_t add_string(const std::string& value);
 
+    // Appends an `Identifier`-kind string (a property, global or variable name
+    // that GetById/PutById/... and object-literal keys can reference). Same
+    // placement as add_string; in addition its hash goes at the end of the
+    // Identifier Hash Table and header.identifierCount grows by one. Can be
+    // queued together with add_string (both are string additions).
+    // Throws std::invalid_argument if `value` is empty or non-ASCII.
+    uint32_t add_identifier(const std::string& value);
+
     // Replaces the content (and length) of string `idx`. `newBytes` is already
     // encoded by the caller (ASCII on 8-bit entries, UTF-16LE on isUTF16 ones).
     // The new bytes are appended to the string storage and only entry `idx` is
@@ -77,6 +85,9 @@ public:
     // UTF-16 entry); std::runtime_error if the entry isn't overflow and the new
     // length is >= 255 (promotion not supported), or if a string edit is already
     // queued. An entry that is already overflow stays overflow.
+    // On an Identifier entry the hash at its position in the Identifier Hash
+    // Table is recomputed over the new bytes: this renames the property at every
+    // site that references the entry.
     void set_string_value(uint32_t idx, const std::string& newBytes);
 
     // Replaces the COMPLETE SLP payload of a NewArrayWithBuffer[Long] /
@@ -152,7 +163,7 @@ private:
     // The string sections as they will be serialized, after add_string /
     // set_string_value.
     struct StringSections {
-        std::vector<uint8_t> kindTable, stringTable, overflowTable, storage;
+        std::vector<uint8_t> kindTable, idHash, stringTable, overflowTable, storage;
         uint32_t stringCount = 0, kindCount = 0, overflowCount = 0;
     };
     StringSections buildStringSections() const;
@@ -180,7 +191,7 @@ private:
     std::vector<uint8_t>     funcHeaders_;   // 16 * count (raw SmallFuncHeader)
 
     std::vector<uint8_t>     kindTable_;     // string kind table
-    std::vector<uint8_t>     idHash_;        // identifier hash table, kept verbatim
+    std::vector<uint8_t>     idHash_;        // identifier hash table (4 bytes per Identifier)
     std::vector<uint8_t>     stringTable_;
     std::vector<uint8_t>     overflowTable_;
     std::vector<uint8_t>     stringStorage_;
@@ -199,7 +210,13 @@ private:
     // Queued edits. The setters resolve everything that depends on the original
     // file immediately (operand positions, overflow slot, ...), so serialize()
     // only does mechanical work.
-    std::vector<std::string> pendingStrings_;  // add_string()
+    struct PendingString {
+        std::string value;
+        StringKind  kind;
+    };
+    std::vector<PendingString> pendingStrings_;  // add_string() / add_identifier()
+
+    uint32_t queueNewString(const char* who, const std::string& value, StringKind kind);
 
     struct PendingStringEdit {
         uint32_t    idx;
@@ -207,6 +224,8 @@ private:
         bool        isUTF16;
         bool        wasOverflow;
         uint32_t    ovfSlot;     // valid only if wasOverflow
+        bool        isIdentifier;
+        uint32_t    idOrdinal;   // position in the hash table, valid only if isIdentifier
     };
     std::optional<PendingStringEdit> pendingStringEdit_;
 

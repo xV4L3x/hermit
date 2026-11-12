@@ -218,15 +218,6 @@ def _repl(name):
     return r
 
 
-def test_edit_string_rejects_identifier_before_opening():
-    if not (CORPUS / "hello.hbc").exists():
-        pytest.skip("missing corpus: hello.hbc")
-    r = _repl("hello.hbc")
-    idx = _idx(r.project, "log")   # Identifier + suffix-shared
-    r._edit_string(r.project, f"string:{idx}")
-    assert r.project.is_patched is False
-
-
 # NOTE: the pre-open rejection for suffix-sharing (`global`, only
 # shared, kind String) was REMOVED - the editor now always opens, shows
 # a "shared" banner and does the detach on commit. The old test

@@ -523,16 +523,22 @@ class HermitREPL:
         self.console.print(Syntax(code, "javascript", theme="ansi_dark", line_numbers=False))
 
     def cmd_edit(self, args: list[str]) -> None:
-        """edit func:<N|name|new> | edit string:<idx|value|new> | edit array:<N>  - interactive editor (Ctrl+X -> Y applies in memory; then `patch`)"""
+        """edit func:<N|name|new> | edit string:<idx|value|new> | edit identifier:new | edit array:<N>  - interactive editor (Ctrl+X -> Y applies in memory; then `patch`)"""
+        usage = ("Usage: edit func:<N|name>  |  edit func:new  |  "
+                 "edit string:<idx|value>  |  edit string:new  |  "
+                 "edit identifier:new  |  edit array:<N>")
         if len(args) != 1:
-            self.console.print(
-                "Usage: edit func:<N|name>  |  edit func:new  |  "
-                "edit string:<idx|value>  |  edit string:new  |  edit array:<N>")
+            self.console.print(usage)
             return
         proj = self._require_project()
         arg  = args[0]
 
-        if arg.startswith("string:"):
+        if arg.startswith("identifier:"):
+            if arg != "identifier:new":
+                self.console.print(usage)
+                return
+            self._edit_identifier_new(proj)
+        elif arg.startswith("string:"):
             self._edit_string(proj, arg)
         elif arg.startswith("array:"):
             self._edit_array(proj, arg)
@@ -639,9 +645,10 @@ class HermitREPL:
         )
 
     def _edit_string(self, proj: HermitProject, arg: str) -> None:
-        """edit string:<idx|value>. Only Identifiers are refused (they need
-        Hermes's hash). Empty and shared entries open: a shared one shows a
-        banner and, if edited, detaches from its group. `string:new` opens the
+        """edit string:<idx|value>. Empty and shared entries open: a shared one
+        shows a banner and, if edited, detaches from its group. An Identifier
+        opens with a rename banner (all its sites change) and always commits
+        through the relocation, which rewrites its hash. `string:new` opens the
         editor in "new string" mode."""
         from cli.editor import run_string_editor, encode_string_relocation_commit, _StrEditError
 
@@ -660,13 +667,6 @@ class HermitREPL:
         kinds   = proj.hbc.string_kinds()
         strings = proj.hbc.strings()
         e       = entries[idx]
-
-        if kinds[idx] == _libhbc.StringKind.Identifier:
-            self.console.print(
-                f"[red]string:{idx} is an Identifier[/] - overwriting it desyncs "
-                "the Identifier Hash Table (editing Identifiers is not yet supported)."
-            )
-            return
 
         # Entries sharing bytes with this one (informational). An empty entry
         # shares nothing: without the guard, a0 == a1 inside another entry's
@@ -699,6 +699,11 @@ class HermitREPL:
             self._finish_add_string(proj, state)
             return
 
+        # `O` in the rename prompt -> rename one site only.
+        if getattr(state, "local_site", None) is not None:
+            self._rename_identifier_site(proj, idx, state.value, state.local_site)
+            return
+
         try:
             enc = encode_string_relocation_commit(state)
         except _StrEditError as exc:
@@ -709,10 +714,20 @@ class HermitREPL:
             return
 
         # A shared entry always detaches, even at unchanged length: overwriting
-        # it in place would corrupt the others.
+        # it in place would corrupt the others. An Identifier always relocates:
+        # the relocation also rewrites its hash.
+        is_id = kinds[idx] == _libhbc.StringKind.Identifier
         same_length = len(enc) == e.byte_length
         try:
-            if same_length and not shared_with:
+            if is_id:
+                proj.apply_string_relocation(idx, enc, state.value)
+                n = sum(len(x.sites) for x in xrefs)
+                self.console.print(
+                    f"[green]identifier {idx} renamed in memory[/] "
+                    f"({state.original!r} -> {state.value!r}, {n} site{'' if n == 1 else 's'}) "
+                    f"- [bold]patch[/] to write the .hbc"
+                )
+            elif same_length and not shared_with:
                 proj.apply_string_patch(idx, enc, state.value)
                 self.console.print(
                     f"[green]string {idx} rewritten in memory[/] "
@@ -729,19 +744,79 @@ class HermitREPL:
         except Exception as exc:
             self.console.print(f"[red]Patch rejected (integrity check):[/] {exc}")
 
+    def _rename_identifier_site(self, proj: HermitProject, old_idx: int, value: str,
+                                site) -> None:
+        """One-site rename of Identifier `old_idx`: (1) the Identifier `value` is
+        added, or reused if it exists; (2) the name operand of `site` is
+        re-pointed to it (`apply_rename_site`, opcode widened if needed).
+        Two commits: if (2) fails, the identifier added by (1) stays unused."""
+        old = proj.hbc.strings()[old_idx]
+        fi, off = site.function_index, site.instruction_offset
+        f = proj.hbc.functions()[fi]
+        if f.shared:
+            self.console.print(
+                f"[red]func[{fi}] has shared bytecode (×{f.shareCount})[/] - one site "
+                "would change in every function of the group (cloning one function: bonus B12). "
+                "Nothing changed.")
+            return
+
+        existing = next((i for i, (s, k) in enumerate(zip(proj.hbc.strings(),
+                                                           proj.hbc.string_kinds()))
+                         if k == _libhbc.StringKind.Identifier and str(s) == value), None)
+        if existing is not None:
+            new_idx = existing
+            self.console.print(f"[dim]identifier {value!r} exists: reusing string:{new_idx}[/]")
+        else:
+            try:
+                new_idx = proj.apply_add_identifier(value)
+            except Exception as exc:
+                self.console.print(f"[red]add_identifier rejected:[/] {exc} - nothing changed")
+                return
+            self.console.print(f"[green]new identifier [{new_idx}] {value!r}[/] added in memory")
+
+        try:
+            mnemonic = proj.apply_rename_site(fi, off, new_idx)
+        except Exception as exc:
+            self.console.print(f"[red]Re-point rejected:[/] {exc}")
+            if existing is None:
+                self.console.print(
+                    f"[yellow]string:{new_idx} {value!r} stays in the image unused[/]")
+            return
+        widened = f" (widened {site.mnemonic} -> {mnemonic})" if mnemonic != site.mnemonic else ""
+        self.console.print(
+            f"[green]func[{fi}] @ {off:#06x} now names {value!r}[/]{widened}; "
+            f"the other sites keep {old!r} - [bold]patch[/] to write the .hbc")
+
+    def _edit_identifier_new(self, proj: HermitProject) -> None:
+        """edit identifier:new: the string editor in "new string" mode, kind Identifier."""
+        from cli.editor import run_string_editor
+
+        state = run_string_editor(
+            0, proj.hbc.strings(), proj.hbc.string_kinds(),
+            proj.hbc.string_entries(), (), (), add=True,
+            add_kind=_libhbc.StringKind.Identifier,
+        )
+        if getattr(state, "commit", False):
+            self._finish_add_string(proj, state)
+
     def _finish_add_string(self, proj: HermitProject, state) -> None:
-        """Commit of `edit string:new` / Ctrl+N."""
+        """Commit of `edit string:new` / Ctrl+N / `edit identifier:new`."""
+        is_id = getattr(state, "adds_identifier", False)
+        what = "identifier" if is_id else "string"
         if not state.value:
-            self.console.print("[dim]No string added.[/]")
+            self.console.print(f"[dim]No {what} added.[/]")
             return
         try:
-            idx = proj.apply_add_string(state.value)
+            idx = (proj.apply_add_identifier(state.value) if is_id
+                   else proj.apply_add_string(state.value))
         except Exception as exc:
-            self.console.print(f"[red]add_string rejected:[/] {exc}")
+            self.console.print(f"[red]add_{what} rejected:[/] {exc}")
             return
+        use = ("as the name of a GetById / PutById / ..." if is_id
+               else "in a LoadConstString")
         self.console.print(
-            f"[green]new string [{idx}] {state.value!r}[/] added in memory - "
-            f"use it in a LoadConstString with [bold]edit func:[/], then [bold]patch[/]"
+            f"[green]new {what} [{idx}] {state.value!r}[/] added in memory - "
+            f"use it {use} with [bold]edit func:[/], then [bold]patch[/]"
         )
 
     def _edit_array(self, proj: HermitProject, arg: str) -> None:
@@ -793,6 +868,7 @@ class HermitREPL:
             lo, ctx = 0, b""
 
         state = run_array_editor(idx, site, vals, keys, strings, funcs,
+                                 kinds=proj.hbc.string_kinds(),
                                  context_bytes=ctx, context_base=lo,
                                  is_shared=bool(shared_with), shared_with=shared_with)
         if not getattr(state, "commit", False):

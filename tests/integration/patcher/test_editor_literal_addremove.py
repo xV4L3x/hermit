@@ -14,6 +14,8 @@ import subprocess
 
 import pytest
 
+import _libhbc
+
 from cli.editor import ArrayEditState, _SLP_TAG_ORDER
 from cli.literals import SLPTag, decode_slp, encode_slp_sequence, reencode_value_bytes
 from cli.project import HermitProject
@@ -37,7 +39,14 @@ def _site_values(proj, idx):
 
 def _state(proj, idx):
     site, vals, keys = _site_values(proj, idx)
-    return ArrayEditState(idx, site, vals, keys, proj.hbc.strings(), proj.hbc.functions())
+    return ArrayEditState(idx, site, vals, keys, proj.hbc.strings(), proj.hbc.functions(),
+                          kinds=proj.hbc.string_kinds())
+
+
+def _first_identifier(proj):
+    """An object key must be an Identifier string (the VM reads keys as symbols)."""
+    return next(i for i, k in enumerate(proj.hbc.string_kinds())
+                if k == _libhbc.StringKind.Identifier)
 
 
 def _commit(proj, idx, keys):
@@ -118,10 +127,11 @@ def test_full_add_flow_object_two_stages():
     proj = load_project("medium.hbc")
     idx = next(i for i, s in enumerate(proj.hbc.literal_sites()) if s.is_object)
     st = _state(proj, idx)
+    key = _first_identifier(proj)
     st.begin_add()
     st.type_pick_sel = _SLP_TAG_ORDER.index(SLPTag.SHORT_STRING)
     st.add_type_pick_confirm()
-    st.buf = "0"
+    st.buf = str(key)
     st.commit_add_field()
     assert st.mode == "add_type_pick"
     assert st.add_stage == "value"
@@ -131,7 +141,7 @@ def test_full_add_flow_object_two_stages():
     st.commit_add_field()
     assert st.pending_add is True
     assert st.values[-1].value == 42
-    assert st.keys[-1].value == 0
+    assert st.keys[-1].value == key
 
 
 def test_request_remove_last_pops_preview():
@@ -245,12 +255,13 @@ def test_add_property_end_to_end_object():
 
     # 'a' -> key stage (ShortString default) -> Enter -> "0" -> Enter ->
     # value stage (Integer default) -> Enter -> "42" -> Enter.
-    st = _commit(proj, idx, "a" + ENTER + "0" + ENTER + ENTER + "42" + ENTER)
+    key = _first_identifier(proj)
+    st = _commit(proj, idx, "a" + ENTER + str(key) + ENTER + ENTER + "42" + ENTER)
 
     assert proj.is_patched is True
     site2, vals2, keys2 = _site_values(proj, idx)
     assert [v.value for v in vals2] == [v.value for v in vals0] + [42]
-    assert [k.value for k in keys2] == [k.value for k in keys0] + [0]
+    assert [k.value for k in keys2] == [k.value for k in keys0] + [key]
     assert site2.count == len(vals0) + 1
 
 

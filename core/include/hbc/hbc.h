@@ -386,6 +386,9 @@ public:
     std::vector<CJSModuleInfo>       cjs_modules()                  const;
     // The BigInt Table decoded, one entry per header.bigIntCount (empty if none).
     const std::vector<BigIntInfo>&   bigints()                      const;
+    // The Identifier Hash Table as stored: header.identifierCount values, one per
+    // Identifier entry in string-table order (see identifier_hash()).
+    std::vector<uint32_t>            identifier_hashes()            const;
     std::vector<std::string>         source_files()                 const;
     std::vector<SourceLocation>      source_locations(uint32_t functionIndex) const;
     std::string                      decompile(uint32_t functionIndex) const;
@@ -439,5 +442,18 @@ struct InvalidStringEntryError : std::runtime_error {
 struct FileTooSmallError : std::runtime_error {
     FileTooSmallError() : std::runtime_error("File too small to be a valid HBC file") {}
 };
+
+// =============================================================================
+// Identifier hash
+// =============================================================================
+
+// Hash of an Identifier string as Hermes stores it in the Identifier Hash Table
+// and the VM uses it to register the symbol: Jenkins one-at-a-time with no
+// final mix (h += c; h += h << 10; h ^= h >> 6, from h = 0). `c` is each byte of
+// an ASCII entry or each UTF-16LE code unit of a UTF-16 entry, so an ASCII string
+// and its UTF-16 form hash the same. Described in the Hermes source:
+// include/hermes/Support/HashString.h (hashString), JenkinsHash.h.
+// Throws std::invalid_argument on an odd byte length with `isUTF16`.
+uint32_t identifier_hash(const uint8_t* data, size_t byteLen, bool isUTF16);
 
 } // namespace hbc

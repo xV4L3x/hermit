@@ -7,6 +7,7 @@ add_library(hbc STATIC
     src/parser/function_source_table.cpp
     src/parser/cjs_module_table.cpp
     src/parser/bigint_table.cpp
+    src/format/identifier_hash.cpp
     src/format/opcodes.cpp
     src/format/opcodes_v94.cpp
     src/format/opcodes_v95.cpp

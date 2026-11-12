@@ -7,14 +7,14 @@ from cli.editor.instructions import (
     new_function_seed_instrs, new_function_stub, run_editor,
 )
 from cli.editor.strings import (
-    StringEditState, _StrEditError, encode_new_string, encode_string_commit,
+    StringEditState, _StrEditError, encode_new_identifier, encode_new_string, encode_string_commit,
     encode_string_new_value, encode_string_relocation_commit, encode_string_value,
     run_string_editor,
 )
 
 __all__ = [
     "ArrayEditState", "EditorState", "StringEditState",
-    "assemble_committed_function", "encode_committed_lines", "encode_new_string",
+    "assemble_committed_function", "encode_committed_lines", "encode_new_identifier", "encode_new_string",
     "encode_string_commit", "encode_string_new_value",
     "encode_string_relocation_commit", "encode_string_value",
     "new_function_seed_instrs", "new_function_stub",
