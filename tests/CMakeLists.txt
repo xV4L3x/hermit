@@ -24,6 +24,8 @@ add_executable(hermit_tests
     unit/bigint/test_bigint.cpp
     unit/cjs-modules/test_cjs_modules.cpp
     unit/metro-modules/test_metro_modules.cpp
+    unit/environments/test_environments.cpp
+    unit/values/test_values.cpp
     unit/identifiers/test_identifiers.cpp
     unit/decompiler/test_decompiler.cpp
     unit/patcher/test_encoder.cpp

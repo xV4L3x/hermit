@@ -905,10 +905,10 @@ description, which covers every defined opcode): the 14 WASM/asm.js
 load/store opcodes (`0xC0`–`0xCD`, present only because this Hermes build
 enables `HERMES_RUN_WASM`, never observed emitted by ordinary JS), the 11
 generator/`for-in`/`for-of` opcodes (whose *body* reconstruction as JS
-control flow is unimplemented — note `SaveGenerator`'s jump target is
-classified below as a non-jump `Addr8` operand, which may mean the current
-CFG builder misses a real generator re-entry edge, not yet empirically
-confirmed), `PutOwnGetterSetterByVal` (getter/setter object-literal
+control flow is unimplemented; `SaveGenerator`'s `Addr8`/`Addr32` operand is
+the resume point, where the next generator call restarts with the frame
+registers saved, while execution falls through to the `Ret` that yields: the
+CFG models it as a `GeneratorResume` edge), `PutOwnGetterSetterByVal` (getter/setter object-literal
 definition), and `ThrowIfHasRestrictedGlobalProperty` (an ECMAScript-spec
 guard, likely emission-paired with `DeclareGlobalVar`). See bonus items
 **B21–B25** for the decompiler-side detail; this document records what each

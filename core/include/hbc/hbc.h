@@ -165,6 +165,7 @@ enum class EdgeKind : uint8_t {
     SwitchCase,
     BackEdge,          // loop edge, detected via DFS
     ExceptionHandler,  // edge to the catch block
+    GeneratorResume,   // SaveGenerator block -> its resume point (next generator call)
 };
 
 struct CFGEdge {
@@ -264,6 +265,129 @@ struct ModuleInfo {
     // nulls, so `dependencies` is empty without meaning "no dependencies".
     bool     dependenciesKnown = true;
     uint32_t defineOffset      = 0;      // offset of the __d call in the global function
+};
+
+// Closure environments (env_accesses() and friends). An environment is created
+// by CreateEnvironment (the function's scope; parent = the environment the
+// running closure captured) or CreateInnerEnvironment (parent = the one in its
+// register operand), and is identified by that instruction: (function, offset).
+// GetEnvironment N reads the captured environment of the running closure and
+// walks N parent links; CreateClosure*/CreateGenerator* capture the environment
+// in their register operand. Semantics from lib/VM/Interpreter.cpp at
+// hermes-2023-09-26-RNv0.73.0 (HBC 96).
+struct EnvKey {
+    uint32_t function = 0;  // function that creates the environment
+    uint32_t offset   = 0;  // of its Create[Inner]Environment instruction
+    bool operator==(const EnvKey& o) const { return function == o.function && offset == o.offset; }
+    bool operator<(const EnvKey& o) const {
+        return function != o.function ? function < o.function : offset < o.offset;
+    }
+};
+
+// One Load/Store[NP]ToEnvironment[L] instruction, resolved to the environment
+// it touches.
+struct EnvAccess {
+    uint32_t offset   = 0;      // of the instruction, in its function
+    bool     isStore  = false;
+    uint32_t slot     = 0;
+    bool     resolved = false;  // false: the environment could not be traced
+    EnvKey   env;               // valid when resolved
+};
+
+// An environment a function creates, with its parent.
+struct EnvironmentInfo {
+    EnvKey env;
+    bool   isInner     = false;  // CreateInnerEnvironment
+    bool   parentKnown = false;  // false: parent could not be traced
+    bool   hasParent   = false;  // parentKnown && a parent exists (not the global scope)
+    EnvKey parent;
+};
+
+// A use of an environment slot: function + offset of the Load/Store.
+struct EnvSlotUse {
+    uint32_t functionIndex = 0;
+    uint32_t offset        = 0;
+    bool     isStore       = false;
+};
+
+// Value analysis (value_flow()): what a register provably holds at an
+// instruction. Only facts that hold on every path are kept; anything else is
+// absent (std::nullopt), never guessed.
+struct AbstractValue {
+    enum class Kind : uint8_t {
+        GlobalObject,   // the global object (GetGlobalObject)
+        Global,         // a property of it: `name`
+        FactoryParam,   // a Metro factory parameter: index 1..7 = global, require,
+                        // importDefault, importAll, module, exports, dependencyMap
+        Closure,        // a closure of function `index`
+        Module,         // the exports of Metro module `index` (require(dependencyMap[k]))
+        ImportDefault,  // _interopRequireDefault(module `index`): {default: m} or m itself
+        DepIndex,       // dependencyMap[`index`] of the enclosing module
+        Prop,           // `base`.`name`
+        Object,         // the object literal allocated at offset `index` of function
+                        // `(uint32_t)number` (NewObject / NewObjectWithBuffer)
+        Number, String, Undefined, Null, Boolean,  // constants (`number` / `name`)
+    };
+    Kind        kind  = Kind::Undefined;
+    uint32_t    index = 0;
+    double      number = 0;       // Number; Boolean (0 or 1)
+    std::string name;             // Global / Prop: property name; String: the value
+    std::shared_ptr<const AbstractValue> base;  // Prop only
+
+    bool operator==(const AbstractValue& o) const;
+    bool operator!=(const AbstractValue& o) const { return !(*this == o); }
+    // Readable form: module_2.AppRegistry, func_84, require, dependencyMap[3], "s", 3
+    std::string toString() const;
+};
+
+// The exports of a Metro module (module_exports()), from its code:
+// `exports.X = v`, `Object.defineProperty(exports, "X", {get() {return v}})` or
+// `{value: v}`, `module.exports = v`, `module.exports.X = v`. A name keeps a
+// value only when every store agrees (Babel's `exports.X = void 0` placeholders
+// are ignored when a real store exists).
+struct ModuleExport {
+    std::string name;
+    std::optional<AbstractValue> value;
+    bool viaGetter = false;  // Object.defineProperty with a getter
+};
+
+struct ModuleExports {
+    bool reassigned = false;             // module.exports = value
+    std::optional<AbstractValue> value;  // that value, when every assignment agrees
+    bool esModule = false;               // __esModule defined (Babel ES module)
+    bool dynamicNames = false;           // some name is not a constant (e.g. export *)
+    std::vector<ModuleExport> names;     // sorted by name, __esModule excluded
+};
+
+// A call whose callee is a known function (resolved_calls()).
+struct ResolvedCall {
+    enum class Via : uint8_t {
+        Closure,  // the callee register holds the closure (local, or an environment slot)
+        Export,   // reached through module exports (module_M.x, importDefaultOf(module_M).default)
+    };
+    uint32_t      offset      = 0;   // of the Call*/Construct* instruction
+    uint32_t      callee      = 0;   // function index
+    Via           via         = Via::Closure;
+    bool          isConstruct = false;
+    AbstractValue calleeValue;       // the callee as the analysis sees it, before resolution
+};
+
+// A call of a function from elsewhere (function_callers()).
+struct CallerSite {
+    uint32_t         caller = 0;   // function index
+    uint32_t         offset = 0;   // of the call instruction
+    ResolvedCall::Via via   = ResolvedCall::Via::Closure;
+    bool             isConstruct = false;
+};
+
+// Register values at one instruction: `operands` parallel to
+// Instruction::operands (the value of each register operand before the
+// instruction executes; nullopt for unknown or non-register operands), `result`
+// the value of the destination register after it.
+struct InstrValues {
+    uint32_t offset = 0;
+    std::vector<std::optional<AbstractValue>> operands;
+    std::optional<AbstractValue> result;
 };
 
 // An entry of the CJS Module Table (header.cjsModuleCount), present only
@@ -396,6 +520,40 @@ public:
     // Metro entry points: the module ids passed to `__r(id)` in the global
     // function, in call order (empty if the file is not a Metro bundle).
     std::vector<uint32_t>            metro_entry_modules()          const;
+    // Closure environments, see EnvKey. env_accesses(): every environment
+    // load/store of a function, in offset order. environments(): the
+    // environments a function creates. captured_environment(): the environment
+    // the function captured when it was created (nullopt: none, as for the
+    // global function, or not traceable, or the function is never created by
+    // a CreateClosure*/CreateGenerator*).
+    // env_slot_uses(): every load/store of one slot, across the whole file.
+    std::vector<EnvAccess>           env_accesses(uint32_t functionIndex) const;
+    std::vector<EnvironmentInfo>     environments(uint32_t functionIndex) const;
+    std::optional<EnvKey>            captured_environment(uint32_t functionIndex) const;
+    std::vector<EnvSlotUse>          env_slot_uses(const EnvKey& env, uint32_t slot) const;
+    // Value analysis, computed per Metro module (the module's functions share
+    // their environment slots) or for the functions outside every module.
+    // value_flow(): the instructions of `functionIndex` where some register
+    // value is known, in offset order. env_slot_value(): the value every store
+    // of that slot agrees on, if any. function_module(): the Metro module the
+    // function belongs to (its factory or a function nested in it).
+    std::vector<InstrValues>         value_flow(uint32_t functionIndex) const;
+    std::optional<AbstractValue>     env_slot_value(const EnvKey& env, uint32_t slot) const;
+    std::optional<uint32_t>          function_module(uint32_t functionIndex) const;
+    // The exports of a Metro module (empty if `moduleId` is not a module).
+    ModuleExports                    module_exports(uint32_t moduleId) const;
+    // `v` followed through module exports: module_M.x -> the value of export x
+    // of module M, importDefaultOf(module_M).default -> its default export (ES
+    // module) or module.exports, module_M -> module.exports when reassigned.
+    // Values relative to M (its `module.exports`) become module_M. Unknown
+    // exports leave the value as it is.
+    AbstractValue                    resolve_value(const AbstractValue& v) const;
+    // Calls of `functionIndex` whose callee resolves to a function, in offset order.
+    std::vector<ResolvedCall>        resolved_calls(uint32_t functionIndex) const;
+    // Calls of `functionIndex` from its own module and every module that imports
+    // it, directly or through other modules (dependencyMap), or from the
+    // functions outside modules for a function outside modules.
+    std::vector<CallerSite>          function_callers(uint32_t functionIndex) const;
     std::vector<CJSModuleInfo>       cjs_modules()                  const;
     // The BigInt Table decoded, one entry per header.bigIntCount (empty if none).
     const std::vector<BigIntInfo>&   bigints()                      const;

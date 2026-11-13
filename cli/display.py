@@ -686,7 +686,7 @@ def module_callers_rows(mod, mods: list, funcs: list) -> list[str]:
 def module_function_separator(func, mod) -> str:
     """Header line of one function in `disasm module:<id>`."""
     tag = f"# module {mod.module_id}" + (" entry" if func.index == mod.function_index else "")
-    return (f"\x1b[1;36m── [{func.index}] {func.name}\x1b[0m  "
+    return (f"\x1b[1;36m── func:{func.index} ({func.name})\x1b[0m  "
             f"\x1b[36m{tag}\x1b[0m \x1b[2m{'─' * 20}\x1b[0m")
 
 
@@ -727,10 +727,32 @@ def decompiled_function_rows(hbc, func) -> list[str]:
     return js_to_ansi_rows("\n".join(lines[i:]))
 
 
+def module_exports_rows(exports) -> list[str]:
+    """The exports of a module (HBCFile.module_exports()): one row per name with
+    its value when every store agrees, `?` otherwise; `get` marks a getter."""
+    flags = []
+    if exports.es_module:
+        flags.append("ES module")
+    if exports.reassigned:
+        flags.append("module.exports = "
+                     + (str(exports.value) if exports.value is not None else "?"))
+    if exports.dynamic_names:
+        flags.append("+ names computed at runtime (export *)")
+    rows = [f"\x1b[36mexports ({len(exports.names)})\x1b[0m"
+            + (f"  \x1b[2m{', '.join(flags)}\x1b[0m" if flags else "")]
+    width = max((len(e.name) for e in exports.names), default=0)
+    for e in exports.names:
+        value = str(e.value) if e.value is not None else "\x1b[2m?\x1b[0m"
+        getter = "  \x1b[2m(get)\x1b[0m" if e.via_getter else ""
+        rows.append(f"  \x1b[1m{e.name:<{width}}\x1b[0m  = {value}{getter}")
+    return rows
+
+
 def module_detail_rows(mod, mods: list, funcs: list, entries: list,
-                       n_functions: Optional[int] = None) -> list[str]:
+                       n_functions: Optional[int] = None, exports=None) -> list[str]:
     """`modules module:<id>`: factory, number of functions, where it is defined,
-    and its dependencyMap (module_callees_rows()). Who includes it: `xrefs module:<id>`."""
+    its exports (module_exports_rows()) and its dependencyMap
+    (module_callees_rows()). Who includes it: `xrefs module:<id>`."""
     rows = [
         f"\x1b[1mmodule #{mod.module_id}\x1b[0m"
         + ("  \x1b[1;32mentry\x1b[0m (__r)" if mod.module_id in entries else ""),
@@ -738,11 +760,10 @@ def module_detail_rows(mod, mods: list, funcs: list, entries: list,
     ]
     if n_functions is not None:
         rows.append(f"  functions  {n_functions}  \x1b[2m(functions --module={mod.module_id})\x1b[0m")
-    rows += [
-        f"  __d at     \x1b[33m{mod.define_offset:#06x}\x1b[0m in the global function",
-        "",
-        f"\x1b[36mdependencies ({len(mod.dependencies)})\x1b[0m",
-    ]
+    rows += [f"  __d at     \x1b[33m{mod.define_offset:#06x}\x1b[0m in the global function", ""]
+    if exports is not None:
+        rows += module_exports_rows(exports) + [""]
+    rows += [f"\x1b[36mdependencies ({len(mod.dependencies)})\x1b[0m"]
     rows += ["  " + r for r in module_callees_rows(mod, mods, funcs)]
     rows += ["", f"\x1b[2mwho includes it: xrefs module:{mod.module_id}\x1b[0m"]
     return rows
@@ -916,10 +937,11 @@ def make_disasm_panel(
 
 
 def _fmt_instr_ansi(instr, src_comment: Optional[str] = None,
-                    previewer: Optional[LiteralPreview] = None) -> str:
+                    previewer: Optional[LiteralPreview] = None,
+                    note: Optional[str] = None) -> str:
     """An instruction as an ANSI string for show_list(). With a `previewer`, a
     New{Array,Object}WithBuffer[Long] instruction gets the literal it builds after
-    its operands."""
+    its operands; `note` (disasm_annotations()) is appended as a `; ` comment."""
     ops = []
     for op in instr.operands:
         t = op.type
@@ -950,6 +972,8 @@ def _fmt_instr_ansi(instr, src_comment: Optional[str] = None,
         if pv:
             ops_str += f"   {pv}"
     cmt = f"  \x1b[2m\x1b[32m; {src_comment}\x1b[0m" if src_comment else ""
+    if note:
+        cmt += f"  \x1b[36m; {note}\x1b[0m"
     return (
         f"  \x1b[2m{instr.offset:#06x}\x1b[0m  "
         f"\x1b[1m\x1b[33m{instr.mnemonic:<20}\x1b[0m"
@@ -962,10 +986,12 @@ def disasm_to_ansi_rows(
     instrs: list,
     src_locs: Optional[list] = None,
     previewer: Optional[LiteralPreview] = None,
+    notes: Optional[dict] = None,
 ) -> list[str]:
     """ANSI rows of the main disasm view: a header, then one row per
     instruction (`; L<line>:<col>` where the source line changes) with the jump
-    table under each SwitchImm."""
+    table under each SwitchImm. `notes`: offset -> annotation
+    (disasm_annotations())."""
     js_params = func.paramCount - 1
     flags = _function_flags(func, call_flags=False)
     hdr = (
@@ -978,7 +1004,8 @@ def disasm_to_ansi_rows(
     rows: list[str] = [hdr, ""]
 
     for instr, src_comment in _source_annotations(instrs, src_locs):
-        rows.append(_fmt_instr_ansi(instr, src_comment, previewer))
+        rows.append(_fmt_instr_ansi(instr, src_comment, previewer,
+                                    notes.get(instr.offset) if notes else None))
         if instr.mnemonic == "SwitchImm" and instr.switch_targets:
             min_val = instr.operands[3].u32
             default_target = instr.offset + instr.operands[2].i32
@@ -1064,4 +1091,296 @@ def all_debug_source_table_rows(hbc) -> list[str]:
             rows.append("    \x1b[2m(none)\x1b[0m")
     rows.append("")
     rows.append("  \x1b[2mend of debug source table\x1b[0m")
+    return rows
+
+
+# Closure environments, values and resolved calls (B30 step 2)
+#
+# Functions are named as the commands take them: `func:<N> (<name>)`.
+
+_KIND = _libhbc.AbstractValue.Kind
+_REQUIRE_PARAM = 2   # FactoryParam index of `require`
+_IDENT_RE = re.compile(r"^[A-Za-z_$][A-Za-z0-9_$]*$")
+
+
+def func_ref(funcs: list, idx: int) -> str:
+    """`func:<N> (<name>)`."""
+    return f"func:{idx} ({_func_name(funcs, idx)})"
+
+
+class SlotNamer:
+    """Labels of environment slots: `func:<owner> (<name>) slot <N> <var>`, the
+    variable name from the owner's debug info (scope_variables()) when present,
+    `env@<offset>` when the owner creates more than one environment."""
+
+    def __init__(self, hbc, funcs: list) -> None:
+        self.hbc = hbc
+        self.funcs = funcs
+        self._names: dict[int, list[str]] = {}
+        self._env_count: dict[int, int] = {}
+
+    def name(self, env, slot: int) -> str:
+        owner = env.function
+        if owner not in self._names:
+            f = self.funcs[owner] if owner < len(self.funcs) else None
+            self._names[owner] = ([v.name for v in self.hbc.scope_variables(owner)]
+                                  if f is not None and f.hasDebugInfo else [])
+        names = self._names[owner]
+        return names[slot] if slot < len(names) else ""
+
+    def env_label(self, env) -> str:
+        owner = env.function
+        if owner not in self._env_count:
+            self._env_count[owner] = len(self.hbc.environments(owner))
+        at = f" env@{env.offset:#06x}" if self._env_count[owner] > 1 else ""
+        return func_ref(self.funcs, owner) + at
+
+    def label(self, env, slot: int) -> str:
+        name = self.name(env, slot)
+        return f"{self.env_label(env)} slot {slot}" + (f" {name}" if name else "")
+
+
+def render_value(hbc, v, funcs: list) -> str:
+    """An analysis value as the decompiler names it, without following
+    exports: a closure as func_ref(), importDefaultOf(module_M) as module_M for
+    an ES module (_interopRequireDefault returns it unchanged), and its
+    `.default` as module_M for a CommonJS one (the wrapper's `default`)."""
+    if v.kind == _KIND.Closure:
+        return func_ref(funcs, v.index)
+    if v.kind == _KIND.ImportDefault and hbc.module_exports(v.index).es_module:
+        return f"module_{v.index}"
+    if v.kind == _KIND.Prop and v.base is not None:
+        b = v.base
+        if (b.kind == _KIND.ImportDefault and v.name == "default"
+                and not hbc.module_exports(b.index).es_module):
+            return f"module_{b.index}"
+        base = render_value(hbc, b, funcs)
+        return f"{base}.{v.name}" if _IDENT_RE.match(v.name) else f"{base}[{v.name!r}]"
+    return str(v)
+
+
+def value_text(hbc, v, funcs: list) -> str:
+    """render_value() of `v` followed through module exports (resolve_value())."""
+    return render_value(hbc, hbc.resolve_value(v), funcs)
+
+
+def _slot_value_text(hbc, env, slot: int, funcs: list) -> Optional[str]:
+    """The value every store of the slot agrees on (value_text()), or None."""
+    v = hbc.env_slot_value(env, slot)
+    return None if v is None else value_text(hbc, v, funcs)
+
+
+def require_sites(hbc, func_index: int) -> dict[int, str]:
+    """offset -> `module_M` for each `require(dependencyMap[k])` call of the
+    function (callee = the factory's `require` parameter, result a module)."""
+    out = {}
+    for iv in hbc.value_flow(func_index):
+        if len(iv.operands) < 2 or iv.result is None or iv.result.kind != _KIND.Module:
+            continue
+        callee = iv.operands[1]
+        if callee is not None and callee.kind == _KIND.FactoryParam and callee.index == _REQUIRE_PARAM:
+            out[iv.offset] = str(iv.result)
+    return out
+
+
+def _call_note(hbc, rc, funcs: list) -> str:
+    """A resolved call: `calls func:<N> (<name>)` when the register holds the
+    closure, `<callee>(...) = func:<N> (<name>)` when the callee is reached
+    through module exports (`module_1(...)`, `module_242.jsx(...)`)."""
+    target = func_ref(funcs, rc.callee)
+    if rc.via == _libhbc.ResolvedCall.Via.Export:
+        return f"{render_value(hbc, rc.callee_value, funcs)}(...) = {target}"
+    return f"calls {target}"
+
+
+def disasm_annotations(hbc, func_index: int, funcs: list,
+                       namer: Optional[SlotNamer] = None) -> dict[int, str]:
+    """offset -> annotation for the disasm view of one function:
+    environment loads/stores (`func:83 (anonymous_func_83) slot 0 = module_513`),
+    `require(dependencyMap[k])` (`require -> module_M`) and calls whose callee
+    resolves to a function (_call_note())."""
+    namer = namer or SlotNamer(hbc, funcs)
+    notes: dict[int, list[str]] = {}
+    for a in hbc.env_accesses(func_index):
+        if not a.resolved:
+            notes.setdefault(a.offset, []).append(f"slot {a.slot} (environment not traced)")
+            continue
+        text = namer.label(a.env, a.slot)
+        value = _slot_value_text(hbc, a.env, a.slot, funcs)
+        if value is not None:
+            text += f" = {value}"
+        notes.setdefault(a.offset, []).append(text)
+    for off, mod in require_sites(hbc, func_index).items():
+        notes.setdefault(off, []).append(f"require -> {mod}")
+    for rc in hbc.resolved_calls(func_index):
+        notes.setdefault(rc.offset, []).append(_call_note(hbc, rc, funcs))
+    return {off: ", ".join(parts) for off, parts in notes.items()}
+
+
+def _bold_ref(funcs: list, idx: int) -> str:
+    return f"\x1b[1mfunc:{idx}\x1b[0m ({_func_name(funcs, idx)})"
+
+
+def _use_row(funcs: list, use) -> str:
+    kind = "store" if use.is_store else "load "
+    return (f"      {kind}  {func_ref(funcs, use.function_index)}"
+            f"  @ \x1b[33m{use.offset:#06x}\x1b[0m")
+
+
+def _env_chain(hbc, start, namer: SlotNamer) -> list[str]:
+    """Owners of `start` and of its ancestors, innermost first
+    (SlotNamer.env_label()); `?` at the end when a parent could not be traced."""
+    chain: list[str] = []
+    key = start
+    seen = set()
+    while key is not None and (key.function, key.offset) not in seen:
+        seen.add((key.function, key.offset))
+        chain.append(namer.env_label(key))
+        info = next((e for e in hbc.environments(key.function) if e.env == key), None)
+        if info is None or not info.parent_known:
+            chain.append("?")
+            break
+        if not info.has_parent:
+            break
+        key = info.parent
+    return chain
+
+
+def env_view_rows(hbc, func, funcs: list, call_graph: list,
+                  module: Optional[tuple] = None) -> list[str]:
+    """`env func:<N>`: the environments the function creates (with every slot,
+    its debug name, its value when provable and who stores/loads it), the chain
+    of environments it captured, and its own environment accesses.
+    `module`: (module id, is entry) from function_modules(), if any."""
+    namer = SlotNamer(hbc, funcs)
+    tag = ""
+    if module is not None:
+        tag = f"  \x1b[2m# module {module[0]}{' entry' if module[1] else ''}\x1b[0m"
+    rows = [_bold_ref(funcs, func.index) + tag, ""]
+
+    envs = hbc.environments(func.index)
+    captured = hbc.captured_environment(func.index)
+    if not envs:
+        rows.append("  environment  \x1b[2mnone\x1b[0m")
+    for e in envs:
+        if not e.parent_known:
+            parent = "?"
+        elif not e.has_parent:
+            parent = "none"
+        else:
+            parent = namer.env_label(e.parent)
+        inner = "  (inner)" if e.is_inner else ""
+        rows.append(f"  environment  created at \x1b[33m{e.env.offset:#06x}\x1b[0m{inner}"
+                    f", parent: {parent}")
+    rows.append("  captured     " + (" -> ".join(_env_chain(hbc, captured, namer))
+                                     if captured is not None else "\x1b[2mnone\x1b[0m"))
+
+    # Slots: an environment is reachable only from the function that creates
+    # it and the functions nested in it, so their accesses list every slot used.
+    if envs:
+        children = closure_children(call_graph)
+        nested, stack = {func.index}, [func.index]
+        while stack:
+            for c in children.get(stack.pop(), ()):
+                if c not in nested:
+                    nested.add(c)
+                    stack.append(c)
+        used: dict[tuple, set] = {}
+        for g in nested:
+            for a in hbc.env_accesses(g):
+                if a.resolved and a.env.function == func.index:
+                    used.setdefault((a.env.function, a.env.offset), set()).add(a.slot)
+        for e in envs:
+            slots = set(used.get((e.env.function, e.env.offset), ()))
+            n_names = len(hbc.scope_variables(func.index)) if func.hasDebugInfo else 0
+            if len(envs) == 1:
+                slots |= set(range(n_names))
+            title = f"slots ({len(slots)})"
+            if len(envs) > 1:
+                title += f"  env@{e.env.offset:#06x}"
+            rows += ["", f"\x1b[36m{title}\x1b[0m"]
+            for slot in sorted(slots):
+                name = namer.name(e.env, slot)
+                value = _slot_value_text(hbc, e.env, slot, funcs)
+                rows.append(f"  slot {slot:<3} " + (f"\x1b[1m{name}\x1b[0m" if name else "\x1b[2m-\x1b[0m")
+                            + (f"  = {value}" if value is not None else "  \x1b[2m= ?\x1b[0m"))
+                uses = hbc.env_slot_uses(e.env, slot)
+                if not uses:
+                    rows.append("      \x1b[2mnever loaded or stored\x1b[0m")
+                rows += [_use_row(funcs, u) for u in uses]
+
+    accesses = hbc.env_accesses(func.index)
+    rows += ["", f"\x1b[36maccesses ({len(accesses)})\x1b[0m"]
+    for a in accesses:
+        kind = "store" if a.is_store else "load "
+        if a.resolved:
+            target = namer.label(a.env, a.slot)
+            value = _slot_value_text(hbc, a.env, a.slot, funcs)
+            if value is not None:
+                target += f" = {value}"
+        else:
+            target = f"slot {a.slot}  \x1b[2m(environment not traced)\x1b[0m"
+        rows.append(f"  @ \x1b[33m{a.offset:#06x}\x1b[0m  {kind}  {target}")
+    return rows
+
+
+def _offsets_text(offsets: list[int]) -> str:
+    return ", ".join(f"\x1b[33m{o:#06x}\x1b[0m" for o in offsets)
+
+
+def function_callers_rows(hbc, func, funcs: list, call_graph: list) -> list[str]:
+    """Callers of a function, one row per caller: its calls (the call graph's
+    direct calls plus the calls the value analysis resolves, function_callers():
+    through a register, an environment slot or module exports, across modules)
+    with their count and offsets, and on a separate row the closure creation
+    (the function that creates it, which does not call it)."""
+    calls: dict[int, set] = {}
+    news: dict[int, set] = {}
+    creations: dict[int, set] = {}
+    for cs in call_graph:
+        if cs.is_resolved and cs.callee_index == func.index:
+            (calls if cs.is_direct else creations).setdefault(cs.caller_index, set()).add(cs.offset)
+    for c in hbc.function_callers(func.index):
+        calls.setdefault(c.caller, set()).add(c.offset)
+        if c.is_construct:
+            news.setdefault(c.caller, set()).add(c.offset)
+    rows = []
+    for caller in sorted(set(calls) | set(creations)):
+        ref = _bold_ref(funcs, caller)
+        if caller in creations:
+            rows.append(f"{ref}  creates the closure  @ {_offsets_text(sorted(creations[caller]))}")
+        if caller in calls:
+            offs = sorted(calls[caller])
+            n_new = len(news.get(caller, ()))
+            what = f"{len(offs)} call{'s' if len(offs) != 1 else ''}"
+            if n_new:
+                what += f" ({n_new} new)"
+            rows.append(f"{ref}  {what}  @ {_offsets_text(offs)}")
+    return rows
+
+
+def function_callees_rows(hbc, func, funcs: list, call_graph: list) -> list[str]:
+    """Callees of a function, one row per call site in offset order: the call
+    graph's sites, the unresolved ones completed by resolved_calls() where the
+    value analysis knows the callee (`as module_1(...)` when reached through
+    module exports) and by require_sites() for `require(dependencyMap[k])`."""
+    resolved = {rc.offset: rc for rc in hbc.resolved_calls(func.index)}
+    requires = require_sites(hbc, func.index)
+    rows = []
+    for cs in sorted((cs for cs in call_graph if cs.caller_index == func.index),
+                     key=lambda cs: cs.offset):
+        at = f"  @ \x1b[33m{cs.offset:#06x}\x1b[0m"
+        if cs.is_resolved:
+            rows.append(f"{_bold_ref(funcs, cs.callee_index)}{at}  \x1b[2m({cs.mnemonic})\x1b[0m")
+        elif cs.offset in resolved:
+            rc = resolved[cs.offset]
+            how = cs.mnemonic
+            if rc.via == _libhbc.ResolvedCall.Via.Export:
+                how += f", as {render_value(hbc, rc.callee_value, funcs)}(...)"
+            rows.append(f"{_bold_ref(funcs, rc.callee)}{at}  \x1b[2m({how})\x1b[0m")
+        elif cs.offset in requires:
+            rows.append(f"\x1b[36mrequire -> {requires[cs.offset]}\x1b[0m{at}"
+                        f"  \x1b[2m({cs.mnemonic})\x1b[0m")
+        else:
+            rows.append(f"\x1b[2m[unresolved]\x1b[0m{at}  \x1b[2m({cs.mnemonic})\x1b[0m")
     return rows

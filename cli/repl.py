@@ -20,7 +20,7 @@ from cli.viewer import show_list
 
 _COMMANDS = [
     "open", "info", "strings", "arrays", "functions", "modules",
-    "disasm", "cfg", "src", "xrefs", "decompile", "edit", "patch", "help", "exit", "quit",
+    "disasm", "cfg", "src", "xrefs", "env", "decompile", "edit", "patch", "help", "exit", "quit",
 ]
 
 _PROMPT_STYLE = Style.from_dict({"prompt": "bold cyan"})
@@ -395,7 +395,8 @@ class HermitREPL:
         if args:
             mod   = self._resolve_module_arg(args[0])
             rows  = display.module_detail_rows(mod, mods, funcs, entries,
-                                               counts[mod.module_id])
+                                               counts[mod.module_id],
+                                               proj.hbc.module_exports(mod.module_id))
             title = (f"module #{mod.module_id}  [{mod.function_index}] "
                      f"{funcs[mod.function_index].name}")
             self._show_rows(rows, title)
@@ -419,10 +420,13 @@ class HermitREPL:
         src_locs    = proj.hbc.source_locations(func.index) if func.hasDebugInfo else []
         src_files   = proj.hbc.source_files()
 
-        rows     = display.disasm_to_ansi_rows(func, instrs, src_locs, LiteralPreview(proj.hbc))
+        with self.console.status("analysing environments and calls..."):
+            notes = display.disasm_annotations(proj.hbc, func.index, proj.hbc.functions())
+        rows     = display.disasm_to_ansi_rows(func, instrs, src_locs, LiteralPreview(proj.hbc),
+                                               notes)
         alt_rows = display.debug_source_table_rows(func, src_locs, src_files)
-        title    = f"disasm  [{func.index}] {func.name}  ({len(instrs)} instrs)"
-        alt_title = f"src table  [{func.index}] {func.name}"
+        title    = f"disasm  func:{func.index} ({func.name})  ({len(instrs)} instrs)"
+        alt_title = f"src table  func:{func.index} ({func.name})"
         self._show_rows(rows, title, alt_rows=alt_rows, alt_title=alt_title,
                         full_screen=True)
 
@@ -436,6 +440,7 @@ class HermitREPL:
         indices   = display.module_functions(proj.hbc.call_graph(), mod)
         src_files = proj.hbc.source_files()
         preview   = LiteralPreview(proj.hbc)
+        namer     = display.SlotNamer(proj.hbc, all_funcs)
 
         rows: list[str] = []
         alt_rows: list[str] = []
@@ -448,7 +453,9 @@ class HermitREPL:
             sep = display.module_function_separator(func, mod)
             if rows:
                 rows.append("")
-            rows += [sep] + display.disasm_to_ansi_rows(func, instrs, src_locs, preview)
+            with self.console.status("analysing environments and calls..."):
+                notes = display.disasm_annotations(proj.hbc, idx, all_funcs, namer)
+            rows += [sep] + display.disasm_to_ansi_rows(func, instrs, src_locs, preview, notes)
             if alt_rows:
                 alt_rows.append("")
             alt_rows += display.debug_source_table_rows(func, src_locs, src_files)
@@ -471,7 +478,7 @@ class HermitREPL:
             src_locs = proj.hbc.source_locations(func.index) if func.hasDebugInfo else []
             src_files = proj.hbc.source_files()
             rows      = display.debug_source_table_rows(func, src_locs, src_files)
-            title     = f"src table  [{func.index}] {func.name}"
+            title     = f"src table  func:{func.index} ({func.name})"
             self._show_rows(rows, title)
             return
         self.console.print("Usage: src  |  src func:<N|name>")
@@ -555,15 +562,15 @@ class HermitREPL:
             funcs = proj.hbc.functions()
 
             if show_callers:
-                callers = [cs for cs in cg if cs.is_resolved and cs.callee_index == func.index]
-                rows    = display.call_graph_to_ansi_rows(callers, funcs, mode="callers")
-                title   = f"xrefs  [{func.index}] {func.name}  callers ({len(callers)})"
+                with self.console.status("resolving calls in the importing modules..."):
+                    rows = display.function_callers_rows(proj.hbc, func, funcs, cg)
+                title = f"xrefs  func:{func.index} ({func.name})  callers"
                 self._show_rows(rows, title)
 
             if show_callees:
-                callees = [cs for cs in cg if cs.caller_index == func.index]
-                rows    = display.call_graph_to_ansi_rows(callees, funcs, mode="callees")
-                title   = f"xrefs  [{func.index}] {func.name}  callees ({len(callees)})"
+                with self.console.status("resolving calls..."):
+                    rows = display.function_callees_rows(proj.hbc, func, funcs, cg)
+                title = f"xrefs  func:{func.index} ({func.name})  callees ({len(rows)})"
                 self._show_rows(rows, title)
             return
 
@@ -595,6 +602,25 @@ class HermitREPL:
         funcs = proj.hbc.functions()
         rows  = display.xrefs_detail_to_ansi_rows(xrefs, funcs)
         self._show_rows(rows, title)
+
+    def cmd_env(self, args: list[str]) -> None:
+        """env func:<N|name>  - closure environments: the slots the function's environment holds (debug name, provable value, who stores/loads them), the chain it captured, its own environment accesses"""
+        if len(args) != 1 or not args[0].startswith("func:"):
+            self.console.print("Usage: env func:<N|name>")
+            return
+        proj  = self._require_project()
+        func  = self._resolve_func_arg(args[0])
+        funcs = proj.hbc.functions()
+        cg    = proj.hbc.call_graph()
+        mod   = None
+        mod_id = proj.hbc.function_module(func.index)
+        if mod_id is not None:
+            factory = next((m.function_index for m in proj.hbc.recover_modules()
+                            if m.module_id == mod_id), None)
+            mod = (mod_id, factory == func.index)
+        with self.console.status("analysing environments..."):
+            rows = display.env_view_rows(proj.hbc, func, funcs, cg, mod)
+        self._show_rows(rows, f"env  func:{func.index} ({func.name})")
 
     def cmd_decompile(self, args: list[str]) -> None:
         """decompile func:<N|name> | decompile module:<id> | decompile all [--output=<dir>]  - decompiles to pseudo-JS (module: every function of a Metro module in sequence)"""
@@ -646,7 +672,7 @@ class HermitREPL:
 
         func  = self._resolve_func_arg(args[0])
         rows  = display.decompiled_function_rows(proj.hbc, func)
-        title = f"decompile  [{func.index}] {func.name}"
+        title = f"decompile  func:{func.index} ({func.name})"
         self._show_rows(rows, title, full_screen=True)
 
     def cmd_edit(self, args: list[str]) -> None:

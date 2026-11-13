@@ -15,6 +15,8 @@ add_library(hbc STATIC
     src/disasm/disasm.cpp
     src/cfg/cfg.cpp
     src/analysis/analysis.cpp
+    src/analysis/environments.cpp
+    src/analysis/values.cpp
     src/decompiler/decompiler.cpp
     src/patcher/patcher.cpp
     src/patcher/module.cpp

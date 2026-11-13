@@ -327,8 +327,8 @@ def test_disasm_module_shows_every_function_in_sequence(monkeypatch):
 
     n_instrs = sum(len(hbc.disasm(i)) for i in expected)
     assert title == f"disasm  module #0  {len(expected)} functions  ({n_instrs} instrs)"
-    seps = [strip_ansi(x) for x in rows if strip_ansi(x).startswith("── [")]
-    assert [int(x[4:x.index("]")]) for x in seps] == expected
+    seps = [strip_ansi(x) for x in rows if strip_ansi(x).startswith("── func:")]
+    assert [int(x[len("── func:"):x.index(" (")]) for x in seps] == expected
     assert "# module 0 entry" in seps[0]
     assert all(x.split("  ")[1].startswith("# module 0") and "entry" not in x
                for x in seps[1:])
@@ -367,7 +367,7 @@ def test_decompile_func_opens_full_screen_viewer(viewer_calls):
     r = _repl("hello.hbc")
     r._dispatch("decompile func:1")
     (title, rows, full_screen), = viewer_calls
-    assert full_screen and title == "decompile  [1] greet"
+    assert full_screen and title == "decompile  func:1 (greet)"
     text = "\n".join(strip_ansi(x) for x in rows)
     assert "greet" in text
     assert "decompiled by hermit" not in text      # `//` banner stripped
@@ -384,8 +384,8 @@ def test_decompile_module_shows_every_function(viewer_calls):
     (title, rows, full_screen), = viewer_calls
     assert full_screen
     assert title == f"decompile  module #0  {len(expected)} functions"
-    seps = [strip_ansi(x) for x in rows if strip_ansi(x).startswith("── [")]
-    assert [int(x[4:x.index("]")]) for x in seps] == expected
+    seps = [strip_ansi(x) for x in rows if strip_ansi(x).startswith("── func:")]
+    assert [int(x[len("── func:"):x.index(" (")]) for x in seps] == expected
     assert "# module 0 entry" in seps[0]
 
 
@@ -412,3 +412,19 @@ def test_decompiled_rows_failure_is_a_red_row():
 def test_decompile_module_errors():
     with pytest.raises(ValueError, match="No Metro modules"):
         _repl("hello.hbc")._dispatch("decompile module:0")
+
+
+def test_module_exports_rows():
+    f = _open("hermitvault.hbc")
+    rows = [strip_ansi(r) for r in display.module_exports_rows(f.module_exports(533))]
+    assert rows[0] == "exports (2)  module.exports = {...}"
+    assert rows[1:] == ['  displayName  = "HermitDemo"', '  name         = "HermitDemo"']
+    rows = [strip_ansi(r) for r in display.module_exports_rows(f.module_exports(60))]
+    assert "ES module" in rows[0] and "export *" in rows[0]
+    assert rows[1].endswith("(get)")
+
+
+def test_modules_detail_shows_exports(shown):
+    _repl("hermitvault.hbc")._dispatch("modules module:533")
+    (title, rows), = shown
+    assert any(strip_ansi(r).startswith("exports (2)") for r in rows)

@@ -45,6 +45,7 @@ def _colorize(text: str) -> str:
         line = re.sub(r"(?<![A-Za-z])F(?![A-Za-z])", f"{_RED}F{_R}", line)
         line = re.sub(r"(?<![A-Za-z])def(?![A-Za-z])", f"{_YELLOW}def{_R}", line)
         line = re.sub(r"(?<![A-Za-z])exc(?![A-Za-z])", f"{_ORANGE}exc{_R}", line)
+        line = re.sub(r"(?<![A-Za-z])resume(?![A-Za-z])", f"{_PURPLE}resume{_R}", line)
         # Block tags
         line = line.replace("[entry]", f"{_CYAN}[entry]{_R}")
         line = line.replace("[loop]",  f"{_YELLOW}[loop]{_R}")
@@ -68,6 +69,8 @@ _EDGE_STYLE: dict[EdgeKind, dict] = {
     EdgeKind.SwitchDefault:    {"color": "yellow", "label": "def", "style": ""},
     EdgeKind.SwitchCase:       {"color": "yellow", "label": "",    "style": ""},
     EdgeKind.ExceptionHandler: {"color": "orange", "label": "exc", "style": "dashed"},
+    # generator `yield`: the next generator call resumes at the target
+    EdgeKind.GeneratorResume:  {"color": "purple", "label": "resume", "style": "dotted"},
 }
 
 

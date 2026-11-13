@@ -311,6 +311,17 @@ PYBIND11_MODULE(_libhbc, m) {
         .def("call_graph",         &hbc::HBCFile::call_graph)
         .def("recover_modules",    &hbc::HBCFile::recover_modules)
         .def("metro_entry_modules", &hbc::HBCFile::metro_entry_modules)
+        .def("env_accesses",        &hbc::HBCFile::env_accesses, py::arg("function_index"))
+        .def("environments",        &hbc::HBCFile::environments, py::arg("function_index"))
+        .def("captured_environment", &hbc::HBCFile::captured_environment, py::arg("function_index"))
+        .def("env_slot_uses",       &hbc::HBCFile::env_slot_uses, py::arg("env"), py::arg("slot"))
+        .def("value_flow",          &hbc::HBCFile::value_flow, py::arg("function_index"))
+        .def("env_slot_value",      &hbc::HBCFile::env_slot_value, py::arg("env"), py::arg("slot"))
+        .def("function_module",     &hbc::HBCFile::function_module, py::arg("function_index"))
+        .def("module_exports",      &hbc::HBCFile::module_exports, py::arg("module_id"))
+        .def("resolve_value",       &hbc::HBCFile::resolve_value, py::arg("value"))
+        .def("resolved_calls",      &hbc::HBCFile::resolved_calls, py::arg("function_index"))
+        .def("function_callers",    &hbc::HBCFile::function_callers, py::arg("function_index"))
         .def("cjs_modules",        &hbc::HBCFile::cjs_modules)
         .def("bigints",            &hbc::HBCFile::bigints)
         .def("identifier_hashes",  &hbc::HBCFile::identifier_hashes)
@@ -369,6 +380,7 @@ PYBIND11_MODULE(_libhbc, m) {
         .value("SwitchCase",        hbc::EdgeKind::SwitchCase)
         .value("BackEdge",          hbc::EdgeKind::BackEdge)
         .value("ExceptionHandler",  hbc::EdgeKind::ExceptionHandler)
+        .value("GeneratorResume",   hbc::EdgeKind::GeneratorResume)
     ;
 
     py::class_<hbc::CFGEdge>(m, "CFGEdge")
@@ -433,6 +445,105 @@ PYBIND11_MODULE(_libhbc, m) {
     ;
 
     // Module ID recovery
+    // Closure environments
+    py::class_<hbc::EnvKey>(m, "EnvKey")
+        .def(py::init([](uint32_t function, uint32_t offset) { return hbc::EnvKey{function, offset}; }),
+             py::arg("function"), py::arg("offset"))
+        .def_readonly("function", &hbc::EnvKey::function)
+        .def_readonly("offset",   &hbc::EnvKey::offset)
+        .def("__eq__",   [](const hbc::EnvKey& a, const hbc::EnvKey& b) { return a == b; })
+        .def("__hash__", [](const hbc::EnvKey& k) {
+            return std::hash<uint64_t>{}((uint64_t(k.function) << 32) | k.offset); })
+        .def("__repr__", [](const hbc::EnvKey& k) {
+            return "EnvKey(function=" + std::to_string(k.function) +
+                   ", offset=" + std::to_string(k.offset) + ")"; })
+    ;
+    py::class_<hbc::EnvAccess>(m, "EnvAccess")
+        .def_readonly("offset",   &hbc::EnvAccess::offset)
+        .def_readonly("is_store", &hbc::EnvAccess::isStore)
+        .def_readonly("slot",     &hbc::EnvAccess::slot)
+        .def_readonly("resolved", &hbc::EnvAccess::resolved)
+        .def_readonly("env",      &hbc::EnvAccess::env)
+    ;
+    py::class_<hbc::EnvironmentInfo>(m, "EnvironmentInfo")
+        .def_readonly("env",          &hbc::EnvironmentInfo::env)
+        .def_readonly("is_inner",     &hbc::EnvironmentInfo::isInner)
+        .def_readonly("parent_known", &hbc::EnvironmentInfo::parentKnown)
+        .def_readonly("has_parent",   &hbc::EnvironmentInfo::hasParent)
+        .def_readonly("parent",       &hbc::EnvironmentInfo::parent)
+    ;
+    py::class_<hbc::EnvSlotUse>(m, "EnvSlotUse")
+        .def_readonly("function_index", &hbc::EnvSlotUse::functionIndex)
+        .def_readonly("offset",         &hbc::EnvSlotUse::offset)
+        .def_readonly("is_store",       &hbc::EnvSlotUse::isStore)
+    ;
+
+    // Value analysis
+    py::class_<hbc::AbstractValue> av(m, "AbstractValue");
+    py::enum_<hbc::AbstractValue::Kind>(av, "Kind")
+        .value("GlobalObject",  hbc::AbstractValue::Kind::GlobalObject)
+        .value("Global",        hbc::AbstractValue::Kind::Global)
+        .value("FactoryParam",  hbc::AbstractValue::Kind::FactoryParam)
+        .value("Closure",       hbc::AbstractValue::Kind::Closure)
+        .value("Module",        hbc::AbstractValue::Kind::Module)
+        .value("ImportDefault", hbc::AbstractValue::Kind::ImportDefault)
+        .value("DepIndex",      hbc::AbstractValue::Kind::DepIndex)
+        .value("Prop",          hbc::AbstractValue::Kind::Prop)
+        .value("Object",        hbc::AbstractValue::Kind::Object)
+        .value("Number",        hbc::AbstractValue::Kind::Number)
+        .value("String",        hbc::AbstractValue::Kind::String)
+        .value("Undefined",     hbc::AbstractValue::Kind::Undefined)
+        .value("Null",          hbc::AbstractValue::Kind::Null)
+        .value("Boolean",       hbc::AbstractValue::Kind::Boolean)
+    ;
+    av.def_readonly("kind",   &hbc::AbstractValue::kind)
+      .def_readonly("index",  &hbc::AbstractValue::index)
+      .def_readonly("number", &hbc::AbstractValue::number)
+      .def_property_readonly("name", [](const hbc::AbstractValue& v) { return decodeUtf8(v.name); })
+      .def_property_readonly("base", [](const hbc::AbstractValue& v) -> std::optional<hbc::AbstractValue> {
+          if (!v.base) return std::nullopt;
+          return *v.base;
+      })
+      .def("__eq__",  [](const hbc::AbstractValue& a, const hbc::AbstractValue& b) { return a == b; })
+      .def("__str__", [](const hbc::AbstractValue& v) { return decodeUtf8(v.toString()); })
+      .def("__repr__", [](const hbc::AbstractValue& v) {
+          return py::str("<AbstractValue {}>").format(decodeUtf8(v.toString())); })
+    ;
+    py::class_<hbc::ModuleExport>(m, "ModuleExport")
+        .def_property_readonly("name", [](const hbc::ModuleExport& e) { return decodeUtf8(e.name); })
+        .def_readonly("value",      &hbc::ModuleExport::value)
+        .def_readonly("via_getter", &hbc::ModuleExport::viaGetter)
+    ;
+    py::class_<hbc::ModuleExports>(m, "ModuleExports")
+        .def_readonly("reassigned",    &hbc::ModuleExports::reassigned)
+        .def_readonly("value",         &hbc::ModuleExports::value)
+        .def_readonly("es_module",     &hbc::ModuleExports::esModule)
+        .def_readonly("dynamic_names", &hbc::ModuleExports::dynamicNames)
+        .def_readonly("names",         &hbc::ModuleExports::names)
+    ;
+    py::class_<hbc::ResolvedCall> rcall(m, "ResolvedCall");
+    py::enum_<hbc::ResolvedCall::Via>(rcall, "Via")
+        .value("Closure", hbc::ResolvedCall::Via::Closure)
+        .value("Export",  hbc::ResolvedCall::Via::Export)
+    ;
+    rcall.def_readonly("offset",       &hbc::ResolvedCall::offset)
+         .def_readonly("callee",       &hbc::ResolvedCall::callee)
+         .def_readonly("via",          &hbc::ResolvedCall::via)
+         .def_readonly("is_construct", &hbc::ResolvedCall::isConstruct)
+         .def_readonly("callee_value", &hbc::ResolvedCall::calleeValue)
+    ;
+    py::class_<hbc::CallerSite>(m, "CallerSite")
+        .def_readonly("caller",       &hbc::CallerSite::caller)
+        .def_readonly("offset",       &hbc::CallerSite::offset)
+        .def_readonly("via",          &hbc::CallerSite::via)
+        .def_readonly("is_construct", &hbc::CallerSite::isConstruct)
+    ;
+    py::class_<hbc::InstrValues>(m, "InstrValues")
+        .def_readonly("offset",   &hbc::InstrValues::offset)
+        .def_readonly("operands", &hbc::InstrValues::operands)
+        .def_readonly("result",   &hbc::InstrValues::result)
+    ;
+
     py::class_<hbc::ModuleInfo>(m, "ModuleInfo")
         .def_readonly("function_index", &hbc::ModuleInfo::functionIndex)
         .def_readonly("module_id",      &hbc::ModuleInfo::moduleId)

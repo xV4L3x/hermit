@@ -2,13 +2,17 @@
 // HBCFile::decompile() formatter. Uses only HBCFile's public API.
 
 #include "decompiler/decompiler.h"
+#include "cfg/cfg.h"
+#include "analysis/dataflow.h"
 #include "util/slp.h"
 
 #include <algorithm>
 #include <cctype>
 #include <cmath>
 #include <cstring>
+#include <functional>
 #include <limits>
+#include <map>
 #include <optional>
 #include <sstream>
 #include <stdexcept>
@@ -28,7 +32,9 @@ static std::string strAt(const DecompileContext& ctx, uint32_t idx) {
     return "<str" + std::to_string(idx) + ">";
 }
 
-static bool isValidIdentifier(const std::string& s) {
+// IdentifierName: valid after a dot (`x.in` is legal), not necessarily as a
+// variable name.
+static bool isIdentifierName(const std::string& s) {
     if (s.empty()) return false;
     if (!(std::isalpha(static_cast<unsigned char>(s[0])) || s[0] == '_' || s[0] == '$')) return false;
     for (size_t i = 1; i < s.size(); i++) {
@@ -38,12 +44,33 @@ static bool isValidIdentifier(const std::string& s) {
     return true;
 }
 
+// A name usable as a variable / function name: an IdentifierName that is not a
+// reserved word (debug info can name a slot `in` or `catch`, from compiler
+// temporaries).
+static bool isValidIdentifier(const std::string& s) {
+    static const std::unordered_set<std::string> RESERVED = {
+        "break", "case", "catch", "class", "const", "continue", "debugger", "default",
+        "delete", "do", "else", "enum", "export", "extends", "false", "finally", "for",
+        "function", "if", "import", "in", "instanceof", "new", "null", "return", "super",
+        "switch", "this", "throw", "true", "try", "typeof", "var", "void", "while", "with",
+        "yield", "let", "static", "implements", "interface", "package", "private",
+        "protected", "public", "await",
+    };
+    return isIdentifierName(s) && !RESERVED.count(s);
+}
+
 // Name of a referenced function (CreateClosure* / CallDirect*). Anonymous
 // functions and names that aren't valid JS identifiers (Metro/Babel labels
 // like "?anon_0_foo" or "get Networking", seen on ridemovi.hbc) become func_N.
+static std::string functionRefName(const std::vector<FunctionInfo>& functions, uint32_t idx);
+
 static std::string funcRefName(const DecompileContext& ctx, uint32_t idx) {
-    if (idx >= ctx.functions.size()) return "func_" + std::to_string(idx);
-    const std::string& name = ctx.functions[idx].name;
+    return functionRefName(ctx.functions, idx);
+}
+
+static std::string functionRefName(const std::vector<FunctionInfo>& functions, uint32_t idx) {
+    if (idx >= functions.size()) return "func_" + std::to_string(idx);
+    const std::string& name = functions[idx].name;
     if (name.rfind("anonymous_func_", 0) == 0 || !isValidIdentifier(name))
         return "func_" + std::to_string(idx);
     return name;
@@ -67,7 +94,7 @@ static std::string jsStringLiteral(const std::string& s) {
 
 // obj.prop or obj["non-identifier prop"]
 static std::string propAccess(const std::string& objExpr, const std::string& propName) {
-    if (isValidIdentifier(propName)) return objExpr + "." + propName;
+    if (isIdentifierName(propName)) return objExpr + "." + propName;
     return objExpr + "[" + jsStringLiteral(propName) + "]";
 }
 
@@ -141,11 +168,32 @@ std::string renderObjectLiteral(uint32_t keyBufOffset, uint32_t valBufOffset, ui
 
 } // namespace
 
+static std::string emitExpressionImpl(const Instruction& instr, const DecompileContext& ctx);
+
 std::string emitExpression(const Instruction& instr, const DecompileContext& ctx) {
+    std::string out = emitExpressionImpl(instr, ctx);
+    if (out.empty() || !ctx.annots) return out;
+    auto it = ctx.annots->find(instr.offset);
+    if (it != ctx.annots->end() && !it->second.comment.empty())
+        out += "  // " + it->second.comment;
+    return out;
+}
+
+static std::string emitExpressionImpl(const Instruction& instr, const DecompileContext& ctx) {
     const auto& op = instr.operands;
     const std::string& mn = instr.mnemonic;
 
-    auto reg = [&](size_t i) { return regName(ctx, op[i].u32); };
+    const InstrAnnot* annot = nullptr;
+    if (ctx.annots) {
+        auto it = ctx.annots->find(instr.offset);
+        if (it != ctx.annots->end()) annot = &it->second;
+    }
+    // A source register holding a named value is printed as that name.
+    auto reg = [&](size_t i) {
+        if (annot && i < annot->operandNames.size() && !annot->operandNames[i].empty())
+            return annot->operandNames[i];
+        return regName(ctx, op[i].u32);
+    };
 
     // ---- Suppressed: VM bookkeeping with no JS equivalent ----
     // LoadParam/LoadThisNS destinations are already named this/param_N, so an
@@ -280,9 +328,12 @@ std::string emitExpression(const Instruction& instr, const DecompileContext& ctx
 
     // ---- Calls ----
     if ((mn == "Call1" || mn == "Call2" || mn == "Call3" || mn == "Call4") && op.size() >= 3) {
+        // Operand 2 is `this`. Known undefined: a plain call; the callee's own
+        // base object: a method call (the callee name already reads base.m).
+        const bool skipThis = annot && (annot->dropThis || annot->methodCall);
         std::string args;
-        for (size_t i = 2; i < op.size(); i++) {
-            if (i > 2) args += ", ";
+        for (size_t i = skipThis ? 3 : 2; i < op.size(); i++) {
+            if (i > (skipThis ? 3u : 2u)) args += ", ";
             args += reg(i);
         }
         return reg(0) + " = " + reg(1) + "(" + args + ");";
@@ -323,6 +374,7 @@ std::string emitExpression(const Instruction& instr, const DecompileContext& ctx
     // scope_variables(); any other environment (an outer function's, from
     // GetEnvironment) falls back to envSlot_N, see decompiler.h.
     auto envSlotName = [&](uint32_t envReg, uint32_t slot) {
+        if (annot && !annot->slotName.empty()) return annot->slotName;
         if (static_cast<int64_t>(envReg) == ctx.ownEnvReg &&
             slot < ctx.envSlotNames.size() && isValidIdentifier(ctx.envSlotNames[slot]))
             return ctx.envSlotNames[slot];
@@ -331,8 +383,11 @@ std::string emitExpression(const Instruction& instr, const DecompileContext& ctx
     if ((mn == "StoreToEnvironment" || mn == "StoreToEnvironmentL" ||
          mn == "StoreNPToEnvironment" || mn == "StoreNPToEnvironmentL") && op.size() >= 3)
         return envSlotName(op[0].u32, op[1].u32) + " = " + reg(2) + ";";
-    if ((mn == "LoadFromEnvironment" || mn == "LoadFromEnvironmentL") && op.size() >= 3)
+    if ((mn == "LoadFromEnvironment" || mn == "LoadFromEnvironmentL") && op.size() >= 3) {
+        if (annot && !annot->loadValue.empty())
+            return reg(0) + " = " + annot->loadValue + ";  // " + envSlotName(op[1].u32, op[2].u32);
         return reg(0) + " = " + envSlotName(op[1].u32, op[2].u32) + ";";
+    }
 
     // ---- Miscellaneous ----
     if (mn == "DeclareGlobalVar" && op.size() >= 1)
@@ -822,6 +877,13 @@ std::string headerName(const FunctionInfo& fi, uint32_t functionIndex) {
 
 } // namespace
 
+namespace {
+
+const char* const kFactoryParamNames[] = {"this", "global", "require", "importDefault",
+                                          "importAll", "module", "exports", "dependencyMap"};
+
+} // namespace
+
 std::string HBCFile::decompile(uint32_t functionIndex) const {
     const auto& funcs = functions();
     if (functionIndex >= funcs.size()) {
@@ -844,9 +906,26 @@ std::string HBCFile::decompile(uint32_t functionIndex) const {
     }
 
     const auto instrs  = disasm(functionIndex);
-    const auto cfgData = cfg(functionIndex);
+    // Generator bodies are not reconstructed yet (bonus B23): the structurer
+    // gets the CFG without resume edges, the resume blocks are dumped as
+    // unstructured regions.
+    const auto cfgData = buildCFG(instrs, fi.bytecodeSizeInBytes, version(),
+                                  fi.exceptionHandlers, /*generatorResume=*/false);
 
-    const auto regNames = buildRegNames(fi, instrs);
+    auto regNames = buildRegNames(fi, instrs);
+
+    // A Metro factory's parameters are (global, require, importDefault,
+    // importAll, module, exports, dependencyMap).
+    bool isFactory = false;
+    for (const auto& mod : recover_modules())
+        if (mod.functionIndex == functionIndex) { isFactory = true; break; }
+    auto paramName = [&](uint32_t jsIndex) -> std::string {  // 0-based JS parameter
+        if (isFactory && jsIndex + 1 < 8) return kFactoryParamNames[jsIndex + 1];
+        return "param_" + std::to_string(jsIndex);
+    };
+    if (isFactory)
+        for (auto& n : regNames)
+            if (n.rfind("param_", 0) == 0) n = paramName(std::stoul(n.substr(6)));
 
     // Names of the function's OWN scope variables, and the register of its
     // environment (from its first CreateEnvironment). Outer scopes aren't resolved.
@@ -862,8 +941,105 @@ std::string HBCFile::decompile(uint32_t functionIndex) const {
         }
     }
 
+    // ---- Analysis annotations (value_flow, env_accesses, resolved_calls) ----
+    std::unordered_map<uint32_t, InstrAnnot> annots;
+    {
+        std::map<uint32_t, bool> esModule;
+        auto isES = [&](uint32_t m) {
+            auto it = esModule.find(m);
+            if (it == esModule.end()) it = esModule.emplace(m, module_exports(m).esModule).first;
+            return it->second;
+        };
+        using K = AbstractValue::Kind;
+        // Name of a value that is an entity worth naming; "" for constants,
+        // object literals and anything unknown (the register stays rN).
+        std::function<std::string(const AbstractValue&)> render = [&](const AbstractValue& v) -> std::string {
+            switch (v.kind) {
+                case K::FactoryParam:  return v.index < 8 ? kFactoryParamNames[v.index] : "";
+                case K::GlobalObject:  return "globalThis";
+                case K::Global:        return isValidIdentifier(v.name) ? v.name : "";
+                case K::Closure:       return functionRefName(funcs, v.index);
+                case K::Module:        return "module_" + std::to_string(v.index);
+                case K::ImportDefault: return isES(v.index) ? "module_" + std::to_string(v.index)
+                                                            : "importDefaultOf(module_" + std::to_string(v.index) + ")";
+                case K::DepIndex:      return "dependencyMap[" + std::to_string(v.index) + "]";
+                case K::Prop: {
+                    if (!v.base) return "";
+                    // _interopRequireDefault(m).default is m itself for a CommonJS module
+                    if (v.base->kind == K::ImportDefault && v.name == "default" && !isES(v.base->index))
+                        return "module_" + std::to_string(v.base->index);
+                    const std::string b = render(*v.base);
+                    return b.empty() ? "" : propAccess(b, v.name);
+                }
+                default: return "";
+            }
+        };
+
+        std::unordered_map<uint32_t, EnvAccess> envAt;
+        for (const auto& a : env_accesses(functionIndex)) envAt[a.offset] = a;
+        std::map<uint32_t, std::vector<std::string>> debugNames;  // owner -> scope variables
+        auto slotName = [&](const EnvAccess& a) -> std::string {
+            if (!a.resolved) return "";
+            if (a.env.function == functionIndex) {
+                if (a.slot < envSlotNames.size() && isValidIdentifier(envSlotNames[a.slot]))
+                    return envSlotNames[a.slot];
+                return "envSlot_" + std::to_string(a.slot);
+            }
+            auto it = debugNames.find(a.env.function);
+            if (it == debugNames.end()) {
+                std::vector<std::string> names;
+                if (a.env.function < funcs.size() && funcs[a.env.function].hasDebugInfo)
+                    for (const auto& sv : scope_variables(a.env.function)) names.push_back(sv.name);
+                it = debugNames.emplace(a.env.function, std::move(names)).first;
+            }
+            if (a.slot < it->second.size() && isValidIdentifier(it->second[a.slot]))
+                return it->second[a.slot];
+            return "f" + std::to_string(a.env.function) + "_slot" + std::to_string(a.slot);
+        };
+
+        std::unordered_map<uint32_t, const Instruction*> instrAt;
+        for (const auto& i : instrs) instrAt[i.offset] = &i;
+        for (const auto& iv : value_flow(functionIndex)) {
+            auto ii = instrAt.find(iv.offset);
+            if (ii == instrAt.end()) continue;
+            const Instruction& instr = *ii->second;
+            InstrAnnot an;
+            const auto written = writtenRegisters(instr);
+            const bool writesOp0 = !written.empty() && !instr.operands.empty() &&
+                                   isRegisterOperand(instr.operands[0]) &&
+                                   written.front() == instr.operands[0].u32;
+            an.operandNames.resize(iv.operands.size());
+            for (size_t k = 0; k < iv.operands.size(); ++k)
+                if (iv.operands[k] && !(k == 0 && writesOp0))
+                    an.operandNames[k] = render(*iv.operands[k]);
+            const std::string& mn = instr.mnemonic;
+            if ((mn == "Call1" || mn == "Call2" || mn == "Call3" || mn == "Call4") &&
+                iv.operands.size() >= 3) {
+                const auto& callee = iv.operands[1];
+                const auto& self = iv.operands[2];
+                if (self && self->kind == K::Undefined) an.dropThis = true;
+                else if (self && callee && callee->kind == K::Prop && callee->base &&
+                         *callee->base == *self && !an.operandNames[1].empty())
+                    an.methodCall = true;
+                if (callee && callee->kind == K::FactoryParam && callee->index == 2 &&
+                    iv.result && iv.result->kind == K::Module)
+                    an.comment = render(*iv.result);
+            }
+            if (mn.rfind("LoadFromEnvironment", 0) == 0 && iv.result)
+                an.loadValue = render(*iv.result);
+            annots[iv.offset] = std::move(an);
+        }
+        for (const auto& [off, a] : envAt) annots[off].slotName = slotName(a);
+        for (const auto& rc : resolved_calls(functionIndex))
+            if (rc.via == ResolvedCall::Via::Export) {
+                auto& an = annots[rc.offset];
+                const std::string target = "-> func[" + std::to_string(rc.callee) + "] " + funcs[rc.callee].name;
+                an.comment = an.comment.empty() ? target : an.comment + ", " + target;
+            }
+    }
+
     DecompileContext ctx{regNames, funcs, strings(), envSlotNames, ownEnvReg,
-                         array_buffer(), obj_key_buffer(), obj_value_buffer(), bigints()};
+                         array_buffer(), obj_key_buffer(), obj_value_buffer(), bigints(), &annots};
 
     std::vector<SourceLocation> srcLocs;
     if (fi.hasDebugInfo) srcLocs = source_locations(functionIndex);
@@ -884,7 +1060,7 @@ std::string HBCFile::decompile(uint32_t functionIndex) const {
     std::string params;
     for (uint32_t i = 0; i < jsParams; i++) {
         if (i > 0) params += ", ";
-        params += "param_" + std::to_string(i);
+        params += paramName(i);
     }
 
     // CallDirect is rare in RN: user functions are mostly closures (CreateClosure*).

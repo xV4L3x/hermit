@@ -5,9 +5,26 @@
 #include "hbc/hbc.h"
 
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace hbc {
+
+// What the analyses know about one instruction, in render form (built by
+// HBCFile::decompile() from value_flow(), env_accesses(), resolved_calls()).
+// Empty strings mean "nothing known": the emitter then falls back to the plain
+// register / slot names.
+struct InstrAnnot {
+    // Per operand: the name of the value a SOURCE register holds (module_2,
+    // module_2.AppRegistry, require, exports, dependencyMap[3], func_84, ...).
+    // Never set for a destination register.
+    std::vector<std::string> operandNames;
+    std::string slotName;   // Load/Store*Environment: the resolved slot's name
+    std::string loadValue;  // LoadFromEnvironment: the name of the loaded value
+    bool dropThis   = false;  // Call1-4: `this` is undefined -> f(args)
+    bool methodCall = false;  // Call1-4: `this` is the callee's base -> base.m(args)
+    std::string comment;      // appended as `// comment`
+};
 
 // Everything needed to turn raw operands (register, string and function
 // indices) into readable JS identifiers.
@@ -36,6 +53,8 @@ struct DecompileContext {
     const std::string& objValueBuffer;
     // The BigInt Table (HBCFile::bigints()), for LoadConstBigInt*.
     const std::vector<BigIntInfo>& bigints;
+    // Per-instruction analysis results by offset, or nullptr (plain rendering).
+    const std::unordered_map<uint32_t, InstrAnnot>* annots = nullptr;
 };
 
 // One leaf (non control-flow) instruction as a line of pseudo-JS; also Ret and

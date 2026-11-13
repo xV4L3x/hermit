@@ -143,6 +143,11 @@ def _jump_kind(name: str, args: list, jump_names: set) -> str:
         return 'JumpKind::Return'
     if name == 'SwitchImm':
         return 'JumpKind::Switch'
+    if name in ('SaveGenerator', 'SaveGeneratorLong'):
+        # Declared with DEFINE_JUMP_1, but it does not jump: execution falls
+        # through to the Ret that yields, and the address is the resume point
+        # (saveGenerator(..., IPADD(op1)) in lib/VM/Interpreter.cpp).
+        return 'JumpKind::GeneratorSave'
     if name in jump_names:
         # 1 operand (Addr8/Addr32 only) -> unconditional jump (Jmp, JmpLong)
         # 2+ operands -> conditional jump (condition + address)

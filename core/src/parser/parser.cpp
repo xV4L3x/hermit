@@ -13,6 +13,9 @@
 #include <unistd.h>
 
 #include <algorithm>
+#include <set>
+#include <memory>
+#include <map>
 #include <cerrno>
 #include <cstring>
 #include <optional>
@@ -50,6 +53,11 @@ struct HBCFile::Impl {
     mutable std::optional<std::vector<StringEntry>>  stringEntries;
     mutable std::optional<std::vector<CallSite>>     callGraph;
     mutable std::optional<MetroModules>              modules;
+    mutable std::optional<EnvModel>                  envModel;
+    mutable std::optional<std::vector<int64_t>>      functionGroups;
+    mutable std::map<int64_t, std::unique_ptr<ValueGroup>> valueGroups;
+    mutable std::set<int64_t>                        valueGroupsInProgress;
+    mutable std::map<uint32_t, std::vector<ResolvedCall>> resolvedCalls;  // per function
     mutable std::optional<std::vector<CJSModuleInfo>> cjsModules;
     mutable std::optional<std::vector<BigIntInfo>>   bigInts;
     mutable std::optional<std::vector<LiteralSite>>  literalSites;
@@ -196,6 +204,170 @@ std::vector<uint32_t> HBCFile::metro_entry_modules() const {
     if (!impl_->modules)
         impl_->modules = computeModules(*this);
     return impl_->modules->entries;
+}
+
+static const EnvModel& envModel(const HBCFile& self, std::optional<EnvModel>& memo) {
+    if (!memo) memo = computeEnvironments(self);
+    return *memo;
+}
+
+static void checkFunctionIndex(const HBCFile& self, uint32_t f, const char* what) {
+    if (f >= self.functions().size())
+        throw std::out_of_range(std::string(what) + ": function index " + std::to_string(f) +
+                                " out of range (functionCount=" +
+                                std::to_string(self.functions().size()) + ")");
+}
+
+std::vector<EnvAccess> HBCFile::env_accesses(uint32_t functionIndex) const {
+    checkFunctionIndex(*this, functionIndex, "env_accesses");
+    return envModel(*this, impl_->envModel).accesses[functionIndex];
+}
+
+std::vector<EnvironmentInfo> HBCFile::environments(uint32_t functionIndex) const {
+    checkFunctionIndex(*this, functionIndex, "environments");
+    return envModel(*this, impl_->envModel).environments[functionIndex];
+}
+
+std::optional<EnvKey> HBCFile::captured_environment(uint32_t functionIndex) const {
+    checkFunctionIndex(*this, functionIndex, "captured_environment");
+    return envModel(*this, impl_->envModel).captured[functionIndex];
+}
+
+std::vector<EnvSlotUse> HBCFile::env_slot_uses(const EnvKey& env, uint32_t slot) const {
+    const auto& uses = envModel(*this, impl_->envModel).slotUses;
+    auto it = uses.find({env, slot});
+    return it == uses.end() ? std::vector<EnvSlotUse>{} : it->second;
+}
+
+// Value analysis of one group, memoized. nullptr while that group is being
+// computed (a cycle through the interop-helper check): callers treat it as unknown.
+static const ValueGroup* valueGroup(const HBCFile& self, int64_t group,
+                                    std::optional<std::vector<int64_t>>& groupsMemo,
+                                    std::map<int64_t, std::unique_ptr<ValueGroup>>& memo,
+                                    std::set<int64_t>& inProgress) {
+    if (!groupsMemo) groupsMemo = computeFunctionGroups(self);
+    auto it = memo.find(group);
+    if (it != memo.end()) return it->second.get();
+    if (inProgress.count(group)) return nullptr;
+    inProgress.insert(group);
+    auto result = std::make_unique<ValueGroup>(computeValueGroup(
+        self, group, *groupsMemo,
+        [&](int64_t g) { return valueGroup(self, g, groupsMemo, memo, inProgress); }));
+    inProgress.erase(group);
+    return (memo[group] = std::move(result)).get();
+}
+
+std::optional<uint32_t> HBCFile::function_module(uint32_t functionIndex) const {
+    checkFunctionIndex(*this, functionIndex, "function_module");
+    if (!impl_->functionGroups) impl_->functionGroups = computeFunctionGroups(*this);
+    const int64_t g = (*impl_->functionGroups)[functionIndex];
+    return g < 0 ? std::nullopt : std::optional<uint32_t>(static_cast<uint32_t>(g));
+}
+
+std::vector<InstrValues> HBCFile::value_flow(uint32_t functionIndex) const {
+    checkFunctionIndex(*this, functionIndex, "value_flow");
+    if (!impl_->functionGroups) impl_->functionGroups = computeFunctionGroups(*this);
+    const ValueGroup* g = valueGroup(*this, (*impl_->functionGroups)[functionIndex],
+                                     impl_->functionGroups, impl_->valueGroups,
+                                     impl_->valueGroupsInProgress);
+    if (!g) return {};
+    auto it = g->flow.find(functionIndex);
+    return it == g->flow.end() ? std::vector<InstrValues>{} : it->second;
+}
+
+ModuleExports HBCFile::module_exports(uint32_t moduleId) const {
+    bool known = false;
+    for (const auto& m : recover_modules())
+        if (m.moduleId == moduleId) { known = true; break; }
+    if (!known) return {};
+    if (!impl_->functionGroups) impl_->functionGroups = computeFunctionGroups(*this);
+    const ValueGroup* g = valueGroup(*this, moduleId, impl_->functionGroups, impl_->valueGroups,
+                                     impl_->valueGroupsInProgress);
+    return g ? g->exports : ModuleExports{};
+}
+
+AbstractValue HBCFile::resolve_value(const AbstractValue& v) const {
+    if (!impl_->functionGroups) impl_->functionGroups = computeFunctionGroups(*this);
+    return resolveThroughExports(v, [&](int64_t g) {
+        return valueGroup(*this, g, impl_->functionGroups, impl_->valueGroups,
+                          impl_->valueGroupsInProgress);
+    });
+}
+
+std::vector<ResolvedCall> HBCFile::resolved_calls(uint32_t functionIndex) const {
+    if (auto memo = impl_->resolvedCalls.find(functionIndex); memo != impl_->resolvedCalls.end())
+        return memo->second;
+    const auto flow = value_flow(functionIndex);  // checks the index
+    std::map<uint32_t, const InstrValues*> at;
+    for (const auto& iv : flow) at[iv.offset] = &iv;
+    std::vector<ResolvedCall> out;
+    const size_t n = functions().size();
+    for (const auto& instr : disasm(functionIndex)) {
+        const std::string& mn = instr.mnemonic;
+        const bool isConstruct = mn.rfind("Construct", 0) == 0;
+        if (!(mn.rfind("Call", 0) == 0 || isConstruct) || mn.rfind("CallBuiltin", 0) == 0 ||
+            mn.rfind("CallDirect", 0) == 0)
+            continue;
+        auto it = at.find(instr.offset);
+        if (it == at.end() || it->second->operands.size() < 2 || !it->second->operands[1]) continue;
+        const AbstractValue& callee = *it->second->operands[1];
+        const AbstractValue r = resolve_value(callee);
+        if (r.kind != AbstractValue::Kind::Closure || r.index >= n) continue;
+        ResolvedCall rc;
+        rc.offset      = instr.offset;
+        rc.callee      = r.index;
+        rc.via         = callee.kind == AbstractValue::Kind::Closure ? ResolvedCall::Via::Closure
+                                                                     : ResolvedCall::Via::Export;
+        rc.isConstruct = isConstruct;
+        rc.calleeValue = callee;
+        out.push_back(std::move(rc));
+    }
+    impl_->resolvedCalls[functionIndex] = out;
+    return out;
+}
+
+std::vector<CallerSite> HBCFile::function_callers(uint32_t functionIndex) const {
+    checkFunctionIndex(*this, functionIndex, "function_callers");
+    if (!impl_->functionGroups) impl_->functionGroups = computeFunctionGroups(*this);
+    const auto& groups = *impl_->functionGroups;
+    const int64_t home = groups[functionIndex];
+
+    // Candidate groups: the function's own, plus every module that imports it
+    // (reverse dependencyMap edges, transitively: re-exports).
+    std::set<int64_t> candidates{home};
+    if (home >= 0) {
+        std::map<uint32_t, std::vector<uint32_t>> importers;
+        for (const auto& m : recover_modules())
+            for (const auto& d : m.dependencies)
+                if (d) importers[*d].push_back(m.moduleId);
+        std::vector<uint32_t> stack{static_cast<uint32_t>(home)};
+        while (!stack.empty()) {
+            const uint32_t m = stack.back();
+            stack.pop_back();
+            for (uint32_t i : importers[m])
+                if (candidates.insert(i).second) stack.push_back(i);
+        }
+    }
+    std::vector<CallerSite> out;
+    for (uint32_t f = 0; f < groups.size(); ++f) {
+        if (!candidates.count(groups[f])) continue;
+        for (const auto& rc : resolved_calls(f))
+            if (rc.callee == functionIndex)
+                out.push_back({f, rc.offset, rc.via, rc.isConstruct});
+    }
+    return out;
+}
+
+std::optional<AbstractValue> HBCFile::env_slot_value(const EnvKey& env, uint32_t slot) const {
+    checkFunctionIndex(*this, env.function, "env_slot_value");
+    if (!impl_->functionGroups) impl_->functionGroups = computeFunctionGroups(*this);
+    const ValueGroup* g = valueGroup(*this, (*impl_->functionGroups)[env.function],
+                                     impl_->functionGroups, impl_->valueGroups,
+                                     impl_->valueGroupsInProgress);
+    if (!g) return std::nullopt;
+    auto it = g->slots.find({env, slot});
+    if (it == g->slots.end()) return std::nullopt;
+    return it->second;
 }
 
 std::vector<CJSModuleInfo> HBCFile::cjs_modules() const {

@@ -18,6 +18,12 @@ enum class JumpKind : uint8_t {
     Switch,            // SwitchImm: one successor per jump-table case, plus default
     Return,            // Ret: exit node
     Throw,             // Throw, Unreachable: exit node
+    // SaveGenerator[Long]: falls through to the next instruction (the Ret that
+    // yields), and its address operand is the resume point where execution
+    // restarts on the next generator.next()/return()/throw() with the frame
+    // registers saved (saveGenerator(..., IPADD(op1)) in lib/VM/Interpreter.cpp).
+    // BytecodeList.def declares it with DEFINE_JUMP_1, but it is not a jump.
+    GeneratorSave,
 };
 
 // One entry of a 256-slot table indexed by opcode byte.

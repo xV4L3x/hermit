@@ -1,10 +1,13 @@
 // Algorithm:
-//   1. Leaders: the first instruction, every jump target, and the instruction
-//      after every jump or terminator.
+//   1. Leaders: the first instruction, every jump target, the instruction
+//      after every jump or terminator, and every generator resume point
+//      (SaveGenerator target; SaveGenerator itself does not end its block).
 //   2. Blocks: the ranges [leader_i, leader_{i+1}).
 //   3. Successors, from the jumpKind of each block's last instruction.
 //   4. Exception handler edges: every block overlapping a try range gets an
 //      edge to its catch block.
+//   4b. Generator resume edges: the block holding a SaveGenerator gets an edge
+//      to its resume point.
 //   5. DFS (White/Gray/Black): an edge to a Gray node is a back-edge (loop).
 
 #include "cfg/cfg.h"
@@ -43,7 +46,8 @@ CFGData buildCFG(
     const std::vector<Instruction>&          instrs,
     uint32_t                                 funcBytecodeSize,
     uint32_t                                 version,
-    const std::vector<ExceptionHandlerInfo>& handlers)
+    const std::vector<ExceptionHandlerInfo>& handlers,
+    bool                                     generatorResume)
 {
     CFGData cfg;
     if (instrs.empty()) return cfg;
@@ -58,6 +62,13 @@ CFGData buildCFG(
         const Instruction& instr = instrs[i];
         const OpcodeInfo& info = table[instr.opcode];
         if (!info.mnemonic || info.jumpKind == JumpKind::None) continue;
+
+        // SaveGenerator does not end its block (it falls through to the Ret
+        // that yields); only its resume point starts one.
+        if (info.jumpKind == JumpKind::GeneratorSave) {
+            if (generatorResume) leaders.insert(jumpTarget(instr));
+            continue;
+        }
 
         if (i + 1 < instrs.size())
             leaders.insert(instrs[i + 1].offset);
@@ -78,6 +89,7 @@ CFGData buildCFG(
             case JumpKind::Return:
             case JumpKind::Throw:
             case JumpKind::None:
+            case JumpKind::GeneratorSave:
                 break;
         }
     }
@@ -131,6 +143,7 @@ CFGData buildCFG(
                 break;  // exit node
 
             case JumpKind::None:
+            case JumpKind::GeneratorSave:  // a resume point right after it splits the block
                 if (hasNext)
                     addEdge(b, cfg.blocks[b + 1].startOffset, EdgeKind::FallThrough);
                 break;
@@ -176,6 +189,16 @@ CFGData buildCFG(
                 addEdge(b, eh.target, EdgeKind::ExceptionHandler);
         }
     }
+
+    // ---- 4b. Generator resume edges ----------------------------------------
+    // SaveGenerator saves the frame and the next generator call restarts at its
+    // target: without this edge the resume blocks would have no predecessor.
+    for (uint32_t b = 0; b < cfg.blocks.size() && table && generatorResume; b++)
+        for (const auto& instr : cfg.blocks[b].instructions) {
+            const OpcodeInfo& info = table[instr.opcode];
+            if (info.mnemonic && info.jumpKind == JumpKind::GeneratorSave)
+                addEdge(b, jumpTarget(instr), EdgeKind::GeneratorResume);
+        }
 
     // ---- 5. Back-edges ------------------------------------------------------
     enum class Color : uint8_t { White, Gray, Black };

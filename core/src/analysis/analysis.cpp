@@ -1,4 +1,5 @@
 #include "analysis/analysis.h"
+#include "analysis/dataflow.h"
 #include "hbc/hbc.h"
 #include "util/slp.h"
 #include <algorithm>
@@ -195,17 +196,6 @@ bool isMetroGlobal(const std::string& name, const char* suffix) {
     return name.size() >= n && name.compare(name.size() - n, n, suffix) == 0;
 }
 
-// Instructions whose first register operand is read, not written.
-bool firstRegIsRead(const std::string& mn) {
-    return mn.rfind("Put", 0) == 0 || mn.rfind("TryPut", 0) == 0 ||
-           mn.rfind("Store", 0) == 0 || mn.rfind("J", 0) == 0 ||
-           mn == "Ret" || mn == "Throw" || mn == "SwitchImm" || mn == "IteratorClose";
-}
-
-bool isRegOperand(const Operand& op) {
-    return op.type == Operand::Type::Reg8 || op.type == Operand::Type::Reg32;
-}
-
 } // namespace
 
 // Finds Metro modules in the global function. A Metro bundle registers each
@@ -242,7 +232,7 @@ MetroModules computeModules(const HBCFile& self) {
 
     std::unordered_map<uint32_t, RegValue> regs;
     auto get = [&](const Operand& op) -> const RegValue* {
-        if (!isRegOperand(op)) return nullptr;
+        if (!isRegisterOperand(op)) return nullptr;
         auto it = regs.find(op.u32);
         return it == regs.end() ? nullptr : &it->second;
     };
@@ -281,9 +271,12 @@ MetroModules computeModules(const HBCFile& self) {
             }
         }
 
-        // Transfer function.
-        if (ops.empty() || !isRegOperand(ops[0]) || firstRegIsRead(mn)) continue;
-        const uint32_t dst = ops[0].u32;
+        // Transfer function: the modelled value of the destination is computed
+        // from the operands first, then every written register is clobbered
+        // and the destination gets the value (if any).
+        const auto written = writtenRegisters(instr);
+        if (written.empty()) continue;
+        const uint32_t dst = written.front();
         RegValue v;  // Unknown unless modelled below
         if (mn == "GetGlobalObject") {
             v.kind = RegValue::Kind::GlobalObject;
@@ -335,13 +328,8 @@ MetroModules computeModules(const HBCFile& self) {
             if (const RegValue* src = get(ops[1])) v = *src;
         }
 
-        // IteratorBegin/IteratorNext also write their second operand.
-        if ((mn == "IteratorBegin" || mn == "IteratorNext") && ops.size() >= 2 &&
-            isRegOperand(ops[1]))
-            regs.erase(ops[1].u32);
-
-        if (v.kind == RegValue::Kind::Unknown) regs.erase(dst);
-        else                                   regs[dst] = std::move(v);
+        for (uint32_t r : written) regs.erase(r);
+        if (v.kind != RegValue::Kind::Unknown) regs[dst] = std::move(v);
     }
     return result;
 }

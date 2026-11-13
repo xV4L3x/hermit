@@ -195,3 +195,66 @@ TEST_CASE("CFG: SwitchImm produces SwitchCase edges for every case", "[cfg]") {
         CHECK(isLeader);
     }
 }
+
+// ---------------------------------------------------------------------------
+// Generator resume edges (env_chain_g.hbc, seeder/samples/env_chain.js):
+// `SaveGenerator target; Ret v` yields, and the next generator call restarts at
+// `target` with the frame registers saved (lib/VM/Interpreter.cpp). The CFG
+// must connect the SaveGenerator block to that resume point, and SaveGenerator
+// must not end its block (it falls through to the Ret).
+// ---------------------------------------------------------------------------
+#include "cfg/cfg.h"
+#include "test_util.h"
+
+TEST_CASE("CFG: generator resume edges", "[cfg]") {
+    auto hbc = testutil::openOrSkip(std::string(HBC_CORPUS_DIR) + "/env_chain_g.hbc");
+
+    // The generator body: the function holding SaveGenerator instructions.
+    uint32_t genIdx = UINT32_MAX;
+    std::vector<uint32_t> resumeTargets;
+    for (const auto& fi : hbc.functions()) {
+        std::vector<uint32_t> targets;
+        for (const auto& instr : hbc.disasm(fi.index))
+            if (instr.mnemonic == "SaveGenerator" || instr.mnemonic == "SaveGeneratorLong")
+                targets.push_back(static_cast<uint32_t>(
+                    static_cast<int32_t>(instr.offset) + instr.operands[0].i32));
+        if (!targets.empty()) { genIdx = fi.index; resumeTargets = targets; break; }
+    }
+    REQUIRE(genIdx != UINT32_MAX);
+    REQUIRE(resumeTargets.size() == 2);  // two `yield`s
+
+    auto cfg = hbc.cfg(genIdx);
+    for (uint32_t target : resumeTargets) {
+        const hbc::BasicBlock* resume = nullptr;
+        for (const auto& bb : cfg.blocks)
+            if (bb.startOffset == target) resume = &bb;
+        REQUIRE(resume);
+        // exactly one predecessor, through a GeneratorResume edge, from the
+        // block whose last two instructions are SaveGenerator + Ret
+        REQUIRE(resume->predecessors.size() == 1);
+        const auto& from = cfg.blocks[resume->predecessors[0]];
+        bool viaResume = false;
+        for (const auto& e : from.successors)
+            if (e.targetId == resume->id && e.kind == hbc::EdgeKind::GeneratorResume) viaResume = true;
+        CHECK(viaResume);
+        REQUIRE(from.instructions.size() >= 2);
+        CHECK(from.instructions.back().mnemonic == "Ret");
+        CHECK(from.instructions[from.instructions.size() - 2].mnemonic == "SaveGenerator");
+    }
+
+    // Without resume edges (the decompiler's view until B23) the resume blocks
+    // have no predecessor and no GeneratorResume edge exists.
+    const auto& fi = hbc.functions()[genIdx];
+    auto plain = hbc::buildCFG(hbc.disasm(genIdx), fi.bytecodeSizeInBytes, hbc.version(),
+                               fi.exceptionHandlers, /*generatorResume=*/false);
+    CHECK_FALSE(hasEdgeKind(plain, hbc::EdgeKind::GeneratorResume));
+    for (uint32_t target : resumeTargets)
+        for (const auto& bb : plain.blocks)
+            if (bb.startOffset == target) CHECK(bb.predecessors.empty());
+}
+
+TEST_CASE("CFG: non-generator functions have no resume edge", "[cfg]") {
+    auto hbc = hbc::HBCFile::open(CONTROL_FLOW_HBC);
+    for (const auto& fi : hbc.functions())
+        CHECK_FALSE(hasEdgeKind(hbc.cfg(fi.index), hbc::EdgeKind::GeneratorResume));
+}

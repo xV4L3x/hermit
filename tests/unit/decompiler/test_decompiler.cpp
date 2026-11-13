@@ -17,6 +17,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include "hbc/hbc.h"
+#include "test_util.h"
 
 #include <string>
 #include <vector>
@@ -349,4 +350,51 @@ TEST_CASE("decompile: a function with no directive decompiles normally", "[decom
     std::string code = hbc.decompile(fn.index);
     CHECK(contains(code, "decompiled by hermit"));
     CHECK_FALSE(contains(code, "ORIGINAL SOURCE"));
+}
+
+// =============================================================================
+// Module-aware rendering (B30 step 2, M6): value analysis in the output
+// =============================================================================
+// hermitvault.hbc module 0 (index.js), Metro JS:
+//   var _interopRequireDefault = _$$_REQUIRE(_dependencyMap[0]);
+//   var _reactNative = _$$_REQUIRE(_dependencyMap[1]);
+//   var _App = _interopRequireDefault(_$$_REQUIRE(_dependencyMap[2]));
+//   _reactNative.AppRegistry.registerComponent(_$$_REQUIRE(_dependencyMap[3]).name, () => _App.default);
+
+TEST_CASE("decompile: Metro factory with module values", "[decompiler]") {
+    auto f = testutil::openOrSkip(std::string(HBC_CORPUS_DIR) + "/hermitvault.hbc");
+    const std::string code = f.decompile(83);
+    CHECK(contains(code, "function(global, require, importDefault, importAll, module, exports, dependencyMap)"));
+    CHECK(contains(code, "= require(dependencyMap[0]);  // module_1"));
+    CHECK(contains(code, "= module_1(module_513);  // -> func[86] _interopRequireDefault"));
+    CHECK(contains(code, "envSlot_0 = module_513;"));
+    CHECK(contains(code, "= module_2.AppRegistry.registerComponent(module_533.name, func_84);"));
+    CHECK_FALSE(contains(code, "param_"));
+
+    // the arrow function reads the factory's slot 0
+    const std::string arrow = f.decompile(84);
+    CHECK(contains(arrow, "= module_513;  // f83_slot0"));
+    CHECK(contains(arrow, "return module_513.default;"));
+}
+
+TEST_CASE("decompile: outer scope variables named from debug info", "[decompiler]") {
+    // closure_scope_g.hbc: increment reads/writes `count` of makeCounter
+    auto f = hbc::HBCFile::open(CLOSURE_SCOPE_HBC);
+    uint32_t inc = 0;
+    for (const auto& fi : f.functions())
+        if (fi.name == "increment") inc = fi.index;
+    const std::string code = f.decompile(inc);
+    CHECK(contains(code, "= count;"));
+    CHECK(contains(code, "count = "));
+    CHECK_FALSE(contains(code, "envSlot_"));
+}
+
+TEST_CASE("decompile: reserved words never become variable names", "[decompiler]") {
+    // hermitvault: debug info names some slots `in` / `catch`
+    auto f = testutil::openOrSkip(std::string(HBC_CORPUS_DIR) + "/hermitvault.hbc");
+    for (uint32_t fn : {1947u, 1995u, 3465u, 3483u}) {
+        const std::string code = f.decompile(fn);
+        CHECK_FALSE(contains(code, "= in;"));
+        CHECK_FALSE(contains(code, "= catch;"));
+    }
 }

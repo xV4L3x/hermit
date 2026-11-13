@@ -20,6 +20,7 @@ static std::string jumpKindName(JumpKind k) {
         case JumpKind::Switch:        return "Switch";
         case JumpKind::Return:        return "Return";
         case JumpKind::Throw:         return "Throw";
+        case JumpKind::GeneratorSave: return "GeneratorSave";
     }
     return "None";
 }
