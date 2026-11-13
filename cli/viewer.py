@@ -10,6 +10,7 @@ from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.layout import Layout
 from prompt_toolkit.layout.containers import HSplit, Window
 from prompt_toolkit.layout.controls import FormattedTextControl
+from prompt_toolkit.mouse_events import MouseEventType
 
 
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
@@ -43,12 +44,33 @@ def _truncate_ansi(s: str, width: int) -> str:
     return "".join(out)
 
 
+_WHEEL_STEP = 3   # rows per mouse-wheel notch
+
+
+class _WheelControl(FormattedTextControl):
+    """FormattedTextControl that turns mouse-wheel events into scroll callbacks."""
+
+    def __init__(self, text, on_scroll):
+        super().__init__(text)
+        self._on_scroll = on_scroll
+
+    def mouse_handler(self, mouse_event):
+        if mouse_event.event_type == MouseEventType.SCROLL_DOWN:
+            self._on_scroll(_WHEEL_STEP)
+            return None
+        if mouse_event.event_type == MouseEventType.SCROLL_UP:
+            self._on_scroll(-_WHEEL_STEP)
+            return None
+        return NotImplemented
+
+
 def show_list(
     rows: list[str],
     title: str = "",
     alt_rows: list[str] | None = None,
     alt_title: str = "",
     *,
+    full_screen: bool = False,
     _input=None,
     _output=None,
 ) -> None:
@@ -61,6 +83,12 @@ def show_list(
             Enter  confirms the search (returns to nav, keeps the filter)
     Toggle: s  switches between the main view and the alternate view (if given)
 
+    `full_screen`: use the terminal's alternate screen and its whole height
+    (status and search bars included) instead of an inline window of at most
+    20 rows; the REPL output is back unchanged on quit. The mouse wheel scrolls
+    too (the alternate screen has no scrollback of its own); selecting text with
+    the mouse then needs the terminal's modifier (Option/Shift in most).
+
     `_input`/`_output`: headless tests only (piped input + `DummyOutput()`),
     same as `run_editor` in `cli/editor/`.
     """
@@ -69,7 +97,10 @@ def show_list(
 
     term = shutil.get_terminal_size()
     cols = term.columns
-    view_height = max(5, min(20, term.lines // 2))
+    if full_screen:
+        view_height = max(5, term.lines - 2)     # status bar + search bar
+    else:
+        view_height = max(5, min(20, term.lines // 2))
 
     mode    = ["nav"]    # "nav" | "search"
     query   = [""]
@@ -223,11 +254,15 @@ def show_list(
         offset[0] = max(0, len(filtered) - view_height)
         event.app.invalidate()
 
+    def _wheel(delta: int) -> None:
+        filtered  = _filtered()
+        offset[0] = min(max(0, len(filtered) - view_height), max(0, offset[0] + delta))
+
     # Layout & run
 
     layout = Layout(
         HSplit([
-            Window(FormattedTextControl(_main),       height=view_height),
+            Window(_WheelControl(_main, _wheel),      height=view_height),
             Window(FormattedTextControl(_status),     height=1),
             Window(FormattedTextControl(_search_bar), height=1),
         ])
@@ -238,4 +273,5 @@ def show_list(
         kwargs["input"] = _input
     if _output is not None:
         kwargs["output"] = _output
-    Application(layout=layout, key_bindings=kb, full_screen=False, **kwargs).run()
+    Application(layout=layout, key_bindings=kb, full_screen=full_screen,
+                mouse_support=full_screen, **kwargs).run()

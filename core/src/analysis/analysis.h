@@ -10,7 +10,12 @@
 namespace hbc {
 
 std::vector<CallSite>    computeCallGraph(const HBCFile& self);
-std::vector<ModuleInfo>  computeModules(const HBCFile& self);
+struct MetroModules {
+    std::vector<ModuleInfo> modules;  // one per __d call, in global-function order
+    std::vector<uint32_t>   entries;  // __r arguments, in call order
+};
+
+MetroModules             computeModules(const HBCFile& self);
 std::vector<LiteralSite> computeLiteralSites(const HBCFile& self);
 
 } // namespace hbc

@@ -1,4 +1,4 @@
-"""cfg_dot.py - CFG -> DOT -> graph-easy terminal rendering."""
+"""cfg_dot.py - CFG and Metro module graph -> DOT -> graph-easy terminal rendering."""
 
 from __future__ import annotations
 
@@ -247,8 +247,11 @@ def show_cfg(cfg, func, *, force_compact: bool | None = None) -> None:
     header += "\n"
 
     body = render_cfg(cfg, func, force_compact=force_compact)
-    text = header + "\n" + body
+    _page(header + "\n" + body)
 
+
+def _page(text: str) -> None:
+    """Shows `text` in `less -R -S` (plain print if less is missing)."""
     try:
         pager = subprocess.Popen(
             ["less", "-R", "-S", "--quit-if-one-screen"],
@@ -258,3 +261,114 @@ def show_cfg(cfg, func, *, force_compact: bool | None = None) -> None:
         pager.communicate(text)
     except (BrokenPipeError, FileNotFoundError):
         print(text)
+
+
+# ── Metro module graph (cfg module:<id>) ────────────────────────────────────
+
+# Above this many direct dependencies the graph shows the first ones and a
+# "+N more" node (graph-easy gets slow on very wide graphs; ridemovi has a
+# module with 287 dependencies).
+_MODULE_DEPS_THRESHOLD = 40
+
+
+def _dot_str(s: str) -> str:
+    return s.replace("\\", "\\\\").replace('"', r'\"')
+
+
+def _module_label(mod_id: int, mod, funcs: list) -> str:
+    if mod is None:
+        return f"#{mod_id}\\lnot defined\\l"
+    name = funcs[mod.function_index].name if mod.function_index < len(funcs) else ""
+    return _dot_str(f"#{mod_id}") + r"\l" + _dot_str(f"[{mod.function_index}] {name}") + r"\l"
+
+
+def module_graph_to_dot(mod, mods: list, funcs: list, entries: list, *,
+                        compact: bool = False) -> str:
+    """DOT digraph of `mod` and its direct dependencies (one edge per
+    dependencyMap entry, labelled with its index). `null` entries become a
+    dashed "null" node, ids not defined in the bundle a dashed red node."""
+    by_id = {m.module_id: m for m in mods}
+    deps = list(enumerate(mod.dependencies))
+    hidden = 0
+    if compact and len(deps) > _MODULE_DEPS_THRESHOLD:
+        hidden = len(deps) - _MODULE_DEPS_THRESHOLD
+        deps = deps[:_MODULE_DEPS_THRESHOLD]
+
+    center = f"M{mod.module_id}"
+    lines = [
+        f'digraph "module_{mod.module_id}" {{',
+        "  graph [rankdir=LR fontname=Monospace];",
+        "  node  [shape=box fontname=Monospace style=rounded];",
+        "  edge  [fontname=Monospace fontsize=10];",
+        "",
+    ]
+    tag = "  [entry]" if mod.module_id in entries else ""
+    label = _module_label(mod.module_id, mod, funcs).replace(r"\l", tag + r"\l", 1)
+    lines.append(f'  {center} [label="{label}" style="rounded,filled" fillcolor="#d0e8ff"];')
+
+    seen: set[str] = {center}
+    for i, d in deps:
+        if d is None:
+            node = f"N{i}"
+            lines.append(f'  {node} [label="null" style=dashed];')
+        else:
+            node = f"M{d}"
+            if node not in seen:
+                target = by_id.get(d)
+                attrs = f'label="{_module_label(d, target, funcs)}"'
+                if target is None:
+                    attrs += ' style=dashed color="red"'
+                lines.append(f"  {node} [{attrs}];")
+        seen.add(node)
+        lines.append(f'  {center} -> {node} [label="{i}"];')
+    if hidden:
+        lines.append(f'  MORE [label="+{hidden} more\\l(modules module:{mod.module_id})\\l" style=dashed];')
+        lines.append(f"  {center} -> MORE [style=dashed];")
+    lines.append("}")
+    return "\n".join(lines)
+
+
+def show_module_graph(mod, mods: list, funcs: list, entries: list, *,
+                      force_compact: bool | None = None) -> None:
+    """`cfg module:<id>`: the module and its direct dependencies, via graph-easy
+    in the pager. `force_compact` as in render_cfg()."""
+    found = _find_graph_easy()
+    if found is None:
+        raise RuntimeError(
+            "graph-easy not found - `cfg module:` requires it to render the "
+            "module graph. Install with: cpanm Graph::Easy (a Perl module)."
+        )
+    n = len(mod.dependencies)
+    compact = n > _MODULE_DEPS_THRESHOLD if force_compact is None else force_compact
+    dot = module_graph_to_dot(mod, mods, funcs, entries, compact=compact)
+
+    header = (f"\x1b[1;37mMODULE\x1b[0m  \x1b[1;36m#{mod.module_id}\x1b[0m"
+              f"  \x1b[2m(factory func {mod.function_index}, {n} dependencies)\x1b[0m\n")
+    if compact and n > _MODULE_DEPS_THRESHOLD:
+        header += (f"\x1b[33m[compact view - showing {_MODULE_DEPS_THRESHOLD} of {n} "
+                   f"dependencies, --compact=false for all]\x1b[0m\n")
+    if not mod.dependencies_known:
+        header += "\x1b[31m[dependencyMap is not an array literal: dependencies unknown]\x1b[0m\n"
+
+    ge, env = found
+    try:
+        result = subprocess.run([ge, "--from=graphviz", "--as=boxart"], input=dot,
+                                capture_output=True, text=True, timeout=30, env=env)
+        if result.returncode != 0 or not result.stdout.strip():
+            body = f"\x1b[31m[graph-easy error]\x1b[0m {result.stderr.strip()}\n\n{dot}"
+        else:
+            body = _colorize_modules(result.stdout)
+    except subprocess.TimeoutExpired:
+        body = f"\x1b[31m[graph-easy timed out]\x1b[0m\n\n{dot}"
+    _page(header + "\n" + body)
+
+
+def _colorize_modules(text: str) -> str:
+    out = []
+    for line in text.split("\n"):
+        line = re.sub(r"#\d+", lambda m: f"{_BOLD}{m.group()}{_R}", line)
+        line = re.sub(r"\[\d+\]", lambda m: f"{_DIM}{m.group()}{_R}", line)
+        line = line.replace("[entry]", f"{_CYAN}[entry]{_R}")
+        line = re.sub(r"[◀▼▶▲]", lambda m: f"{_DIM}{m.group()}{_R}", line)
+        out.append(line)
+    return "\n".join(out)

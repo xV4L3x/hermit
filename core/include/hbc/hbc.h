@@ -8,6 +8,7 @@
 #include <memory>
 #include <stdexcept>
 #include <string>
+#include <optional>
 #include <vector>
 
 namespace hbc {
@@ -250,10 +251,19 @@ struct LiteralSite {
 // Modules, source locations, sections
 // =============================================================================
 
-// Metro module, from the __d(factory, moduleId, deps) pattern in the global function.
+// Metro module, from a `__d(factory, moduleId, dependencyMap)` call in the global
+// function (recover_modules()). The ids in `dependencies` are module ids, in the
+// order of the factory's dependencyMap (`_$$_REQUIRE(dependencyMap[i])`). A
+// nullopt entry is a `null` in the dependencyMap: an optional dependency
+// (`try { require('x') } catch {}`) that Metro could not resolve at build time.
 struct ModuleInfo {
-    uint32_t functionIndex;  // factory function
-    uint32_t moduleId;
+    uint32_t functionIndex = 0;          // factory function
+    uint32_t moduleId      = 0;
+    std::vector<std::optional<uint32_t>> dependencies;  // dependencyMap, in order
+    // false: the dependencyMap argument is not an array literal of integers and
+    // nulls, so `dependencies` is empty without meaning "no dependencies".
+    bool     dependenciesKnown = true;
+    uint32_t defineOffset      = 0;      // offset of the __d call in the global function
 };
 
 // An entry of the CJS Module Table (header.cjsModuleCount), present only
@@ -383,6 +393,9 @@ public:
     std::vector<StringXRef>          string_xrefs()                 const;
     std::vector<CallSite>            call_graph()                   const;
     std::vector<ModuleInfo>          recover_modules()              const;
+    // Metro entry points: the module ids passed to `__r(id)` in the global
+    // function, in call order (empty if the file is not a Metro bundle).
+    std::vector<uint32_t>            metro_entry_modules()          const;
     std::vector<CJSModuleInfo>       cjs_modules()                  const;
     // The BigInt Table decoded, one entry per header.bigIntCount (empty if none).
     const std::vector<BigIntInfo>&   bigints()                      const;

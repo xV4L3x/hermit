@@ -310,6 +310,7 @@ PYBIND11_MODULE(_libhbc, m) {
         .def("string_xrefs",       &hbc::HBCFile::string_xrefs)
         .def("call_graph",         &hbc::HBCFile::call_graph)
         .def("recover_modules",    &hbc::HBCFile::recover_modules)
+        .def("metro_entry_modules", &hbc::HBCFile::metro_entry_modules)
         .def("cjs_modules",        &hbc::HBCFile::cjs_modules)
         .def("bigints",            &hbc::HBCFile::bigints)
         .def("identifier_hashes",  &hbc::HBCFile::identifier_hashes)
@@ -435,6 +436,9 @@ PYBIND11_MODULE(_libhbc, m) {
     py::class_<hbc::ModuleInfo>(m, "ModuleInfo")
         .def_readonly("function_index", &hbc::ModuleInfo::functionIndex)
         .def_readonly("module_id",      &hbc::ModuleInfo::moduleId)
+        .def_readonly("dependencies",   &hbc::ModuleInfo::dependencies)
+        .def_readonly("dependencies_known", &hbc::ModuleInfo::dependenciesKnown)
+        .def_readonly("define_offset",  &hbc::ModuleInfo::defineOffset)
     ;
 
     // CJS Module Table (native `hermes -commonjs` mode, never present in a

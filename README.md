@@ -206,14 +206,19 @@ by index or value (`string:42`, `string:"hello"`), literal sites by index
 | `info [sections\|strings\|functions\|all]` | Header summary (version, sizes, counts, global function, source hash); `sections` lists every file section with start/end/size/alignment, `strings` breaks the string table down by kind, encoding and overflow, `functions` counts small/overflow headers, flags and shared bodies. |
 | `strings [--identifiers\|--strings] [filter:<text>]` | String table with kinds. |
 | `arrays [--arrays\|--objects] [filter:<text>] [func:<N\|name>]` | Array and object literal sites, decoded. |
-| `functions` | All functions with parameters, registers and flags; Metro module ids. |
+| `functions [--module=<id>]` | All functions with parameters, registers and flags. Every function of a Metro module (its factory and every function nested in it) is tagged `# module N`, the factory `# module N entry`. `--module` lists only the functions of one module. |
+| `modules [module:<id>]` | Metro modules (`__d(factory, id, dependencyMap)` in the global function): factory, number of functions the module implements, entry points (`__r`), dependencies. `module:<id>` details one module, with each dependencyMap entry resolved to its module. |
 | `disasm func:<N\|name>` | Disassembly with source lines. `s` toggles the debug source table. |
+| `disasm module:<id>` | Disassembly of every function of a Metro module in sequence (factory first, then the nested functions by index), each under a `[N] name  # module X` header. `s` toggles the debug source tables. |
 | `src [func:<N\|name>]` | Debug source table, for all functions or one. |
 | `cfg func:<N\|name> [--compact=true\|false]` | Control-flow graph rendered with graph-easy. |
+| `cfg module:<id> [--compact=true\|false]` | A Metro module and its direct dependencies as a graph (graph-easy); above 40 dependencies only the first 40 are drawn unless `--compact=false`. |
 | `xrefs` | String cross-reference summary. |
 | `xrefs string:<value\|N>` | Every instruction that uses a string. |
-| `xrefs func:<N\|name> [--callers] [--callees]` | Call graph around a function. |
+| `xrefs func:<N\|name> [--callees]` | Callers of a function (who creates or calls it); `--callees` for what it creates or calls. |
+| `xrefs module:<id> [--callees]` | Modules that include a Metro module (with its position in their dependencyMap); `--callees` for the modules it includes. |
 | `decompile func:<N\|name>` | Decompiled JavaScript. |
+| `decompile module:<id>` | Decompiled JavaScript of every function of a Metro module in sequence, each under a `[N] name  # module X` header. |
 | `decompile all [--output=<dir>]` | Decompile every function to `.js` files. |
 | `edit func:<N\|name\|new>` | Bytecode editor; `func:new` builds a new function. |
 | `edit string:<idx\|value\|new>` | String editor; `string:new` adds a string. On an Identifier it renames the property at every site, or at one chosen site (`O` in the prompt). |
@@ -224,7 +229,7 @@ by index or value (`string:42`, `string:"hello"`), literal sites by index
 
 Long listings open in a scrollable viewer: arrow keys, PgUp/PgDn, `g`/`G` for
 top and bottom, `/` to search as you type, `Esc` to clear the search, `q` to
-leave.
+leave. `disasm` and `decompile` open it full screen, where the mouse wheel scrolls too.
 
 ## Editing and patching
 

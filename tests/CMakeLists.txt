@@ -23,6 +23,7 @@ add_executable(hermit_tests
     unit/slp/test_slp.cpp
     unit/bigint/test_bigint.cpp
     unit/cjs-modules/test_cjs_modules.cpp
+    unit/metro-modules/test_metro_modules.cpp
     unit/identifiers/test_identifiers.cpp
     unit/decompiler/test_decompiler.cpp
     unit/patcher/test_encoder.cpp

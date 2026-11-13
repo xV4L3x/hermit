@@ -9,7 +9,6 @@ from prompt_toolkit.completion import NestedCompleter
 from prompt_toolkit.history import FileHistory
 from prompt_toolkit.styles import Style
 from rich.console import Console
-from rich.syntax import Syntax
 
 import _libhbc
 from cli.project import HermitProject
@@ -20,7 +19,7 @@ from cli.viewer import show_list
 
 
 _COMMANDS = [
-    "open", "info", "strings", "arrays", "functions",
+    "open", "info", "strings", "arrays", "functions", "modules",
     "disasm", "cfg", "src", "xrefs", "decompile", "edit", "patch", "help", "exit", "quit",
 ]
 
@@ -36,16 +35,6 @@ class _SafeFileHistory(FileHistory):
             super().store_string(string)
         except OSError:
             pass
-
-
-def _strip_banner_comments(code: str) -> str:
-    """Drops decompile()'s leading `//` banner (func / paramCount / module):
-    useful in the .js files of `decompile all`, noise in the interactive view."""
-    lines = code.split("\n")
-    i = 0
-    while i < len(lines) and lines[i].startswith("//"):
-        i += 1
-    return "\n".join(lines[i:])
 
 
 class HermitREPL:
@@ -163,8 +152,10 @@ class HermitREPL:
         title: str,
         alt_rows: list[str] | None = None,
         alt_title: str = "",
+        full_screen: bool = False,
     ) -> None:
-        show_list(rows, title=title, alt_rows=alt_rows, alt_title=alt_title)
+        show_list(rows, title=title, alt_rows=alt_rows, alt_title=alt_title,
+                  full_screen=full_screen)
 
     def _resolve_func_arg(self, arg: str):
         """'func:<N>' or 'func:<name>' -> FunctionInfo."""
@@ -183,6 +174,23 @@ class HermitREPL:
         if not matches:
             raise ValueError(f"No function named {spec!r}")
         return matches[0]
+
+    def _resolve_module_arg(self, arg: str):
+        """'module:<id>' -> ModuleInfo (Metro module id, from recover_modules())."""
+        if not arg.startswith("module:"):
+            raise ValueError(f"Expected module:<id>, got: {arg!r}")
+        spec = arg[len("module:"):]
+        if not spec.isdigit():
+            raise ValueError(f"module:<id> requires a numeric module id, got: {spec!r}")
+        mods = self._require_project().hbc.recover_modules()
+        if not mods:
+            raise ValueError("No Metro modules in this file (no __d(...) calls in the global function)")
+        mod_id = int(spec)
+        for m in mods:
+            if m.module_id == mod_id:
+                return m
+        raise ValueError(f"No module #{mod_id} (ids: {min(m.module_id for m in mods)}–"
+                         f"{max(m.module_id for m in mods)})")
 
     def _resolve_string_arg(self, arg: str) -> int:
         """'string:<idx>' or 'string:<value>' -> string index."""
@@ -315,15 +323,37 @@ class HermitREPL:
         self._show_rows(rows, title)
 
     def cmd_functions(self, args: list[str]) -> None:
-        """functions  - lists all functions with parameters and flags"""
+        """functions [--module=<id>]  - lists all functions with parameters and flags (--module: only the functions of one Metro module)"""
+        module_arg = None
+        rest = list(args)
+        while rest:
+            a = rest.pop(0)
+            if a.startswith("--module="):
+                module_arg = a.split("=", 1)[1]
+            elif a == "--module" and rest:
+                module_arg = rest.pop(0)
+            else:
+                self.console.print("Usage: functions [--module=<id>]")
+                return
+
         proj        = self._require_project()
         funcs       = proj.hbc.functions()
         global_idx  = proj.hbc.header().global_code_index
 
-        module_ids: dict[int, int] = {}
+        module = None
+        if module_arg is not None:
+            module = self._resolve_module_arg(f"module:{module_arg}")
+            funcs  = [funcs[i] for i in display.module_functions(proj.hbc.call_graph(), module)]
+
+        # Every function of a Metro module is tagged `# module N` (the factory
+        # `# module N entry`). Analysis failures on a malformed file only drop
+        # the tags.
+        mods: list = []
+        func_modules: dict = {}
         try:
-            for mi in proj.hbc.recover_modules():
-                module_ids[mi.function_index] = mi.module_id
+            mods = proj.hbc.recover_modules()
+            if mods:
+                func_modules = display.function_modules(proj.hbc.call_graph(), mods)
         except Exception:
             pass
 
@@ -337,21 +367,53 @@ class HermitREPL:
         except Exception:
             pass
 
-        rows  = display.functions_to_ansi_rows(funcs, global_idx, module_ids, cjs_module_paths)
+        rows  = display.functions_to_ansi_rows(funcs, global_idx, func_modules, cjs_module_paths)
         title = f"functions ({len(rows)})"
-        if module_ids:
-            title += f"  {len(module_ids)} modules"
+        if module is not None:
+            title += (f"  module #{module.module_id} (factory [{module.function_index}]"
+                      " + nested functions)")
+        elif mods:
+            title += f"  {len(mods)} modules"
         if cjs_module_paths:
             title += f"  {len(cjs_module_paths)} CJS modules"
         title += "  * = global entry"
         self._show_rows(rows, title)
 
+    def cmd_modules(self, args: list[str]) -> None:
+        """modules [module:<id>]  - Metro modules: functions implemented and dependencies (who includes a module: xrefs module:<id>)"""
+        proj = self._require_project()
+        if len(args) > 1 or (args and not args[0].startswith("module:")):
+            self.console.print("Usage: modules  |  modules module:<id>")
+            return
+        mods    = proj.hbc.recover_modules()
+        funcs   = proj.hbc.functions()
+        entries = proj.hbc.metro_entry_modules()
+        if not mods:
+            self.console.print("  [dim]No Metro modules: no __d(...) calls in the global function[/]")
+            return
+        counts = display.module_function_counts(proj.hbc.call_graph(), mods)
+        if args:
+            mod   = self._resolve_module_arg(args[0])
+            rows  = display.module_detail_rows(mod, mods, funcs, entries,
+                                               counts[mod.module_id])
+            title = (f"module #{mod.module_id}  [{mod.function_index}] "
+                     f"{funcs[mod.function_index].name}")
+            self._show_rows(rows, title)
+            return
+        rows  = display.modules_to_ansi_rows(mods, funcs, entries, counts)
+        edges = sum(len(m.dependencies) for m in mods)
+        title = f"modules ({len(mods)})  {edges} dependencies  entries (__r): {entries}"
+        self._show_rows(rows, title)
+
     def cmd_disasm(self, args: list[str]) -> None:
-        """disasm func:<N|name>  - disassembles a function (s = debug source table)"""
+        """disasm func:<N|name> | disasm module:<id>  - disassembles a function, or every function of a Metro module in sequence (s = debug source table)"""
         if len(args) != 1:
-            self.console.print("Usage: disasm func:<N|name>")
+            self.console.print("Usage: disasm func:<N|name>  |  disasm module:<id>")
             return
         proj        = self._require_project()
+        if args[0].startswith("module:"):
+            self._disasm_module(args[0])
+            return
         func        = self._resolve_func_arg(args[0])
         instrs      = proj.hbc.disasm(func.index)
         src_locs    = proj.hbc.source_locations(func.index) if func.hasDebugInfo else []
@@ -361,7 +423,40 @@ class HermitREPL:
         alt_rows = display.debug_source_table_rows(func, src_locs, src_files)
         title    = f"disasm  [{func.index}] {func.name}  ({len(instrs)} instrs)"
         alt_title = f"src table  [{func.index}] {func.name}"
-        self._show_rows(rows, title, alt_rows=alt_rows, alt_title=alt_title)
+        self._show_rows(rows, title, alt_rows=alt_rows, alt_title=alt_title,
+                        full_screen=True)
+
+    def _disasm_module(self, arg: str) -> None:
+        """`disasm module:<id>`: the module's functions (factory first, then the
+        nested ones, by index), each under a `[N] name  # module X` separator;
+        the `s` view concatenates their debug source tables."""
+        proj      = self._require_project()
+        mod       = self._resolve_module_arg(arg)
+        all_funcs = proj.hbc.functions()
+        indices   = display.module_functions(proj.hbc.call_graph(), mod)
+        src_files = proj.hbc.source_files()
+        preview   = LiteralPreview(proj.hbc)
+
+        rows: list[str] = []
+        alt_rows: list[str] = []
+        n_instrs = 0
+        for idx in indices:
+            func     = all_funcs[idx]
+            instrs   = proj.hbc.disasm(idx)
+            src_locs = proj.hbc.source_locations(idx) if func.hasDebugInfo else []
+            n_instrs += len(instrs)
+            sep = display.module_function_separator(func, mod)
+            if rows:
+                rows.append("")
+            rows += [sep] + display.disasm_to_ansi_rows(func, instrs, src_locs, preview)
+            if alt_rows:
+                alt_rows.append("")
+            alt_rows += display.debug_source_table_rows(func, src_locs, src_files)
+
+        title = (f"disasm  module #{mod.module_id}  {len(indices)} functions"
+                 f"  ({n_instrs} instrs)")
+        self._show_rows(rows, title, alt_rows=alt_rows,
+                        alt_title=f"src table  module #{mod.module_id}", full_screen=True)
 
     def cmd_src(self, args: list[str]) -> None:
         """src [func:<N|name>]  - debug source table (all functions or just one)"""
@@ -382,7 +477,7 @@ class HermitREPL:
         self.console.print("Usage: src  |  src func:<N|name>")
 
     def cmd_cfg(self, args: list[str]) -> None:
-        """cfg func:<N|name> [--compact=true|false]  - shows the control flow graph"""
+        """cfg func:<N|name> | cfg module:<id> [--compact=true|false]  - control flow graph, or a Metro module and its direct dependencies"""
         force_compact: bool | None = None
         positional = []
         for a in args:
@@ -399,15 +494,21 @@ class HermitREPL:
                 positional.append(a)
 
         if len(positional) != 1:
-            self.console.print("Usage: cfg func:<N|name> [--compact=true|false]")
+            self.console.print("Usage: cfg func:<N|name> | cfg module:<id> [--compact=true|false]")
             return
         proj     = self._require_project()
+        if positional[0].startswith("module:"):
+            mod = self._resolve_module_arg(positional[0])
+            cfg_dot.show_module_graph(mod, proj.hbc.recover_modules(), proj.hbc.functions(),
+                                      proj.hbc.metro_entry_modules(),
+                                      force_compact=force_compact)
+            return
         func     = self._resolve_func_arg(positional[0])
         cfg_data = proj.hbc.cfg(func.index)
         cfg_dot.show_cfg(cfg_data, func, force_compact=force_compact)
 
     def cmd_xrefs(self, args: list[str]) -> None:
-        """xrefs [string:<value|N>] [func:<N|name> [--callers] [--callees]]  (string refs include array/object literal elements)"""
+        """xrefs [string:<value|N>] [func:<N|name>|module:<id> [--callees]]  (callers by default, --callees for callees; string refs include array/object literal elements; module: callers = modules that include it, callees = modules it includes)"""
         proj = self._require_project()
 
         if not args:
@@ -417,14 +518,38 @@ class HermitREPL:
             self._show_rows(rows, title)
             return
 
+        # --- module: branch ---
+        module_arg = next((a for a in args if a.startswith("module:")), None)
+        if module_arg is not None:
+            mod   = self._resolve_module_arg(module_arg)
+            mods  = proj.hbc.recover_modules()
+            funcs = proj.hbc.functions()
+            show_callees = "--callees" in args
+            show_callers = not show_callees
+            if show_callers:
+                rows  = display.module_callers_rows(mod, mods, funcs)
+                title = (f"xrefs  module #{mod.module_id}  callers ({len(rows)})"
+                         "  modules that include it")
+                if rows:
+                    self._show_rows(rows, title)
+                else:
+                    self.console.print(f"  [dim]module #{mod.module_id}: no module includes it[/]")
+            if show_callees:
+                rows  = display.module_callees_rows(mod, mods, funcs)
+                title = (f"xrefs  module #{mod.module_id}  callees ({len(mod.dependencies)})"
+                         "  modules it includes")
+                if rows:
+                    self._show_rows(rows, title)
+                else:
+                    self.console.print(f"  [dim]module #{mod.module_id}: includes no module[/]")
+            return
+
         # --- func: branch ---
         func_arg = next((a for a in args if a.startswith("func:")), None)
         if func_arg is not None:
             func         = self._resolve_func_arg(func_arg)
-            show_callers = "--callers" in args
             show_callees = "--callees" in args
-            if not show_callers and not show_callees:
-                show_callers = show_callees = True
+            show_callers = not show_callees
 
             cg    = proj.hbc.call_graph()
             funcs = proj.hbc.functions()
@@ -445,7 +570,7 @@ class HermitREPL:
         # --- string: branch ---
         spec = next((a[len("string:"):] for a in args if a.startswith("string:")), None)
         if spec is None:
-            self.console.print("Usage: xrefs [string:<value|N>] [func:<N|name> [--callers] [--callees]]")
+            self.console.print("Usage: xrefs [string:<value|N>] [func:<N|name>|module:<id> [--callees]]")
             return
 
         all_xrefs = proj.hbc.string_xrefs()
@@ -472,10 +597,11 @@ class HermitREPL:
         self._show_rows(rows, title)
 
     def cmd_decompile(self, args: list[str]) -> None:
-        """decompile func:<N|name> | decompile all [--output=<dir>]  - decompiles to pseudo-JS"""
+        """decompile func:<N|name> | decompile module:<id> | decompile all [--output=<dir>]  - decompiles to pseudo-JS (module: every function of a Metro module in sequence)"""
         proj = self._require_project()
         if not args:
-            self.console.print("Usage: decompile func:<N|name>  |  decompile all [--output=<dir>]")
+            self.console.print("Usage: decompile func:<N|name>  |  decompile module:<id>  |  "
+                               "decompile all [--output=<dir>]")
             return
 
         if args[0] == "all":
@@ -504,23 +630,24 @@ class HermitREPL:
             )
             return
 
-        func = self._resolve_func_arg(args[0])
-        try:
-            code = proj.hbc.decompile(func.index)
-        except Exception as exc:
-            self.console.print(f"[red]Decompile failed:[/] {exc}")
+        if args[0].startswith("module:"):
+            mod       = self._resolve_module_arg(args[0])
+            all_funcs = proj.hbc.functions()
+            indices   = display.module_functions(proj.hbc.call_graph(), mod)
+            rows: list[str] = []
+            for idx in indices:
+                if rows:
+                    rows.append("")
+                rows.append(display.module_function_separator(all_funcs[idx], mod))
+                rows += display.decompiled_function_rows(proj.hbc, all_funcs[idx])
+            title = f"decompile  module #{mod.module_id}  {len(indices)} functions"
+            self._show_rows(rows, title, full_screen=True)
             return
 
-        code = _strip_banner_comments(code)
-
-        # "show source" (Function Source Table): a standalone alert, not a `//`
-        # comment inside the highlighted body.
-        if func.hasPreservedSource and not func.sourceIsHidden:
-            self.console.print("[bold yellow]ORIGINAL SOURCE - NOT decompiled[/]")
-            self.console.print(Syntax(func.preservedSource, "javascript", theme="ansi_dark", line_numbers=False))
-            return
-
-        self.console.print(Syntax(code, "javascript", theme="ansi_dark", line_numbers=False))
+        func  = self._resolve_func_arg(args[0])
+        rows  = display.decompiled_function_rows(proj.hbc, func)
+        title = f"decompile  [{func.index}] {func.name}"
+        self._show_rows(rows, title, full_screen=True)
 
     def cmd_edit(self, args: list[str]) -> None:
         """edit func:<N|name|new> | edit string:<idx|value|new> | edit identifier:new | edit array:<N>  - interactive editor (Ctrl+X -> Y applies in memory; then `patch`)"""

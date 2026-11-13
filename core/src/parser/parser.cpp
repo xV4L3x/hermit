@@ -49,7 +49,7 @@ struct HBCFile::Impl {
     mutable std::optional<std::vector<StringKind>>   kinds;
     mutable std::optional<std::vector<StringEntry>>  stringEntries;
     mutable std::optional<std::vector<CallSite>>     callGraph;
-    mutable std::optional<std::vector<ModuleInfo>>   modules;
+    mutable std::optional<MetroModules>              modules;
     mutable std::optional<std::vector<CJSModuleInfo>> cjsModules;
     mutable std::optional<std::vector<BigIntInfo>>   bigInts;
     mutable std::optional<std::vector<LiteralSite>>  literalSites;
@@ -189,7 +189,13 @@ std::vector<CallSite> HBCFile::call_graph() const {
 std::vector<ModuleInfo> HBCFile::recover_modules() const {
     if (!impl_->modules)
         impl_->modules = computeModules(*this);
-    return *impl_->modules;
+    return impl_->modules->modules;
+}
+
+std::vector<uint32_t> HBCFile::metro_entry_modules() const {
+    if (!impl_->modules)
+        impl_->modules = computeModules(*this);
+    return impl_->modules->entries;
 }
 
 std::vector<CJSModuleInfo> HBCFile::cjs_modules() const {

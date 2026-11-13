@@ -23,13 +23,13 @@ def _headless_show_list(monkeypatch):
     blocking."""
     from cli.viewer import show_list as real_show_list
 
-    def _fake(rows, title="", alt_rows=None, alt_title=""):
+    def _fake(rows, title="", alt_rows=None, alt_title="", full_screen=False):
         if not rows:
             return
         with create_pipe_input() as inp:
             inp.send_text("q")
             real_show_list(rows, title=title, alt_rows=alt_rows, alt_title=alt_title,
-                           _input=inp, _output=DummyOutput())
+                           full_screen=full_screen, _input=inp, _output=DummyOutput())
 
     monkeypatch.setattr(repl_mod, "show_list", _fake)
 
@@ -69,8 +69,8 @@ def test_dispatch_malformed_quoting_prints_parse_error():
 
 
 @pytest.mark.parametrize("line", [
-    "info", "strings", "arrays", "functions", "disasm func:0", "src",
-    "cfg func:0", "xrefs", "decompile func:0", "edit func:0",
+    "info", "strings", "arrays", "functions", "modules", "disasm func:0", "disasm module:0", "src",
+    "cfg func:0", "cfg module:0", "xrefs", "xrefs module:0", "decompile func:0", "decompile module:0", "edit func:0",
     "patch out.hbc",
 ])
 def test_commands_require_open_project(line):
@@ -218,9 +218,9 @@ def test_xrefs_unknown_string_value_prints_no_references():
 
 def test_xrefs_by_function_callers_and_callees():
     r = _repl()
-    r._dispatch("xrefs func:1 --callers")
+    r._dispatch("xrefs func:1")
     r._dispatch("xrefs func:0 --callees")
-    r._dispatch("xrefs func:0")   # no flag -> both
+    r._dispatch("xrefs func:0")   # no flag -> callers only
 
 
 def test_xrefs_bad_usage_prints_message():
