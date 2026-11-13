@@ -1,6 +1,10 @@
+<img width="1774" height="887" alt="Hermit Banner" src="https://github.com/user-attachments/assets/bf7fcdb8-6d7a-4aab-9f19-7ded6d76858e" />
+
 # Hermit
 
 **Hermes Reverse Engineering & Manipulation Interactive Toolkit.**
+
+[![Mentioned in Awesome Reverse Engineering](https://awesome.re/mentioned-badge.svg)](https://github.com/morluto/awesome-reverse-engineering)
 
 hermit inspects, decompiles and structurally patches Hermes bytecode (HBC), the
 format React Native apps ship their JavaScript in. Open an `.hbc` file, browse
