@@ -295,6 +295,10 @@ class Module:
         """
         Appends a new String-kind string; returns the index it will have in the serialized file. ValueError if empty or non-ASCII. Cannot be combined with other edits in the same Module.
         """
+    def add_string_raw(self, bytes: bytes, utf16: bool = False, kind: StringKind = ...) -> int:
+        """
+        Appends a new string from raw, already-encoded bytes (8-bit if utf16=False, UTF-16LE if utf16=True); returns the index it will have in the serialized file. Unlike add_string, bytes are never validated as ASCII/UTF-8 - this can build a malformed-UTF-16 string (e.g. unpaired surrogates), which add_string/add_identifier reject and which a Python str with unpaired surrogates can't even reach (pybind11's UTF-8 caster rejects it before add_string runs). ValueError if bytes is empty, or odd-length with utf16=True. Cannot be combined with other edits in the same Module.
+        """
     def resize_literal(self, func_idx: int, instr_offset: int, is_object: bool, is_add: bool, new_buffer_bytes: bytes, new_key_buffer_bytes: bytes = b'') -> None:
         """
         Adds (is_add=True) or removes (is_add=False) the LAST element (array) or the LAST key-value pair (object) of a site. new_buffer_bytes/new_key_buffer_bytes = complete SLP payload (count ± 1 elements). Rewrites count, sizeHint (if it matched count), bufferIdx and - for objects - keyBufferIdx. RuntimeError if the function has shared bytecode, sizeHint != count in the original (mixed literal), count exceeds 65535 (impossible), or an offset doesn't fit the width of its operand. Cannot be combined with other edits in the same Module.

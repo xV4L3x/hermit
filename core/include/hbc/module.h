@@ -55,15 +55,24 @@ public:
     uint32_t version() const { return version_; }
     uint32_t function_count() const { return static_cast<uint32_t>(funcs_.size()); }
 
-    // Replaces the body of function `funcIdx`. `frameSize` is the new register
-    // count (>= original, <= 127). With `editAll`, a function with shared
+    // Replaces the body of function `funcIdx`. `frameSize` is a MINIMUM register
+    // count (>= original, <= 127): if `ir` needs more registers than that - the
+    // highest register it touches, or the call-argument window of its largest
+    // Call*/Construct* (StackFrameLayout::CallerExtraRegistersAtEnd + the
+    // callee's numArgsIncludingThis, as hermesc itself computes it) - `frameSize`
+    // is raised to the safe minimum and the bump is reported via warnings().
+    // Passing a too-small frameSize used to corrupt the callee dispatch of an
+    // inserted Call*/Construct* at runtime (undefined read or SIGSEGV,
+    // non-deterministically depending on the exact value); it is now fixed up
+    // instead of trusted as-is. With `editAll`, a function with shared
     // bytecode has the edit applied to every function of the group (their EH
     // tables are relocated at serialize time).
     // Throws std::runtime_error if: the original function contains SwitchImm or
-    // SaveGenerator; `ir` contains a SwitchImm; `frameSize` doesn't fit 7 bits;
-    // `frameSize` grows on a function with an exception handler (with editAll:
-    // on any such member of the group); the bytecode is shared and
-    // `editAll == false` (a private clone is not supported).
+    // SaveGenerator; `ir` contains a SwitchImm; the (possibly raised) frameSize
+    // doesn't fit 7 bits; the (possibly raised) frameSize grows past the
+    // original on a function with an exception handler (with editAll: on any
+    // such member of the group); the bytecode is shared and `editAll == false`
+    // (a private clone is not supported).
     void set_function_body(uint32_t funcIdx, std::vector<AsmInstr> ir,
                            uint32_t frameSize, bool editAll = false);
 
@@ -79,6 +88,19 @@ public:
     // queued together with add_string (both are string additions).
     // Throws std::invalid_argument if `value` is empty or non-ASCII.
     uint32_t add_identifier(const std::string& value);
+
+    // Appends a string from raw, already-encoded bytes with an explicit width:
+    // ASCII/8-bit if `isUtf16` is false, UTF-16LE if true. Unlike add_string,
+    // bytes are never validated as ASCII - this is the only way to add a
+    // malformed-UTF-16 string (e.g. unpaired surrogates), which add_string's
+    // ASCII-only check and the UTF-8 Python/C++ string type both reject. Same
+    // placement as add_string: appended to the end of the string storage, no
+    // existing entry moves. `kind` is `String` (default) or `Identifier`, same
+    // meaning as add_string/add_identifier.
+    // Throws std::invalid_argument if `bytes` is empty, or `isUtf16` is true
+    // and `bytes.size()` is odd.
+    uint32_t add_string_raw(const std::string& bytes, bool isUtf16,
+                            StringKind kind = StringKind::String);
 
     // Replaces the content (and length) of string `idx`. `newBytes` is already
     // encoded by the caller (ASCII on 8-bit entries, UTF-16LE on isUTF16 ones).
@@ -123,12 +145,16 @@ public:
 
     // Appends a new function at the end of the function table and returns its
     // index (= current function_count()). `ir` is assembled in serialize();
-    // `frameSize` must cover the registers used (<= 127, never an overflow
-    // function). Metadata is fixed: paramCount = 1 (`this` only), functionName =
-    // string 0 (cosmetic), strict mode, no exception handler, no debug info
-    // (so its function-info section is empty).
+    // `frameSize` is a MINIMUM register count, raised to the safe minimum (same
+    // rule as set_function_body: highest register used, or the call-argument
+    // window of the largest Call*/Construct* in `ir`) if too small - the bump is
+    // reported via warnings(). The (possibly raised) value must still fit <= 127
+    // (never an overflow function). Metadata is fixed: paramCount = 1 (`this`
+    // only), functionName = string 0 (cosmetic), strict mode, no exception
+    // handler, no debug info (so its function-info section is empty).
     // Throws std::runtime_error if `ir` is empty, has an unknown opcode or a
-    // SwitchImm, `frameSize` > 127, or another edit is already queued.
+    // SwitchImm, the (possibly raised) frameSize > 127, or another edit is
+    // already queued.
     uint32_t add_function(std::vector<AsmInstr> ir, uint32_t frameSize);
 
     // Rebuilds the complete file (header, tables, bytecode, info, debug, footer).
@@ -152,6 +178,11 @@ private:
         bool                     editAll         = false;
         std::vector<AsmInstr>    newIr;
         uint32_t                 newFrameSize    = 0;
+        // true if set_function_body raised the caller's frameSize to a safe
+        // minimum (see computeMinSafeFrameSize); requestedFrameSize is what the
+        // caller actually passed, for the warnings() message.
+        bool                     frameSizeBumped    = false;
+        uint32_t                 requestedFrameSize = 0;
     };
 
     // A section between string storage and bytecode (array/object buffers,
@@ -216,10 +247,13 @@ private:
     struct PendingString {
         std::string value;
         StringKind  kind;
+        bool        isUtf16 = false;
     };
     std::vector<PendingString> pendingStrings_;  // add_string() / add_identifier()
 
     uint32_t queueNewString(const char* who, const std::string& value, StringKind kind);
+    uint32_t queueNewStringRaw(const char* who, const std::string& bytes, bool isUtf16,
+                               StringKind kind);
 
     struct PendingStringEdit {
         uint32_t    idx;
@@ -266,6 +300,11 @@ private:
         uint32_t              paramCount     = 1;
         uint32_t              functionNameId = 0;
         bool                  strictMode     = true;
+        // true if add_function raised the caller's frameSize to a safe minimum
+        // (see computeMinSafeFrameSize); requestedFrameSize is what the caller
+        // actually passed, for the warnings() message.
+        bool                  frameSizeBumped    = false;
+        uint32_t              requestedFrameSize = 0;
     };
     std::optional<PendingFunction> pendingNewFunction_;
 

@@ -198,6 +198,21 @@ PYBIND11_MODULE(_libhbc, m) {
              "Appends a new Identifier-kind string (and its hash); returns the "
              "index it will have in the serialized file. ValueError if empty or "
              "non-ASCII. Can share a Module only with add_string.")
+        .def("add_string_raw",
+             [](hbc::Module& self, const py::bytes& bytes, bool utf16, hbc::StringKind kind) {
+                 return self.add_string_raw(static_cast<std::string>(bytes), utf16, kind);
+             },
+             py::arg("bytes"), py::arg("utf16") = false,
+             py::arg("kind") = hbc::StringKind::String,
+             "Appends a new string from raw, already-encoded bytes (8-bit if "
+             "utf16=False, UTF-16LE if utf16=True); returns the index it will "
+             "have in the serialized file. Unlike add_string, bytes are never "
+             "validated as ASCII/UTF-8 - this can build a malformed-UTF-16 "
+             "string (e.g. unpaired surrogates), which add_string/add_identifier "
+             "reject and which a Python str with unpaired surrogates can't even "
+             "reach (pybind11's UTF-8 caster rejects it before add_string runs). "
+             "ValueError if bytes is empty, or odd-length with utf16=True. "
+             "Cannot be combined with other edits in the same Module.")
         .def("set_string_value",
              [](hbc::Module& self, uint32_t idx, const py::bytes& newBytes) {
                  self.set_string_value(idx, static_cast<std::string>(newBytes));

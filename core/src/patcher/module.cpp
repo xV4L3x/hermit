@@ -1,7 +1,8 @@
 #include "hbc/module.h"
 
 #include "hbc/format.h"
-#include "format/opcodes.h"     // OpcodeInfo, getOpcodeTable, operandSize, JumpKind
+#include "format/opcodes.h"            // OpcodeInfo, getOpcodeTable, operandSize, JumpKind
+#include "format/opcode_categories.h"  // callArgInfo
 #include "disasm/disasm.h"      // disassemble()
 #include "util/sha1.h"
 
@@ -114,6 +115,70 @@ void appendU32(std::vector<uint8_t>& v, uint32_t x) {
 // SmallStringTableEntry as a raw uint32 (bitfields LSB-first): isUTF16:1 | offset:23 | length:8.
 uint32_t packSmallString(bool isUTF16, uint32_t offset, uint32_t length) {
     return (isUTF16 ? 1u : 0u) | ((offset & 0x7FFFFFu) << 1) | ((length & 0xFFu) << 24);
+}
+
+// Number of registers a CALLER must reserve at the top of its own frame, above
+// its locals, to set up an outgoing call (PreviousFrame, SavedIP, SavedCodeBlock,
+// ArgCount, NewTarget, CalleeClosureOrCB - the 6 fixed slots; `this` and the
+// explicit args sit directly above those). Hermes source:
+// include/hermes/BCGen/HBC/StackFrameLayout.h, CallerExtraRegistersAtEnd.
+constexpr uint32_t kCallerExtraRegistersAtEnd = 6;
+
+// Safe minimum frameSize for `ir`: enough to cover every register it touches,
+// plus the call-setup window of any NEWLY INSERTED (origByteOffset == -1)
+// Call1..Call4 (see CallArgInfo's comment in opcode_categories.h for why only
+// that subfamily needs the extra padding - the others' window is already
+// visible via register operands). A frameSize smaller than this makes the VM
+// overlap the callee's call-setup window with the caller's own live
+// registers: undefined reads or SIGSEGV, non-deterministically depending on
+// the exact value.
+//
+// The overhead only ever applies to NEW Call1..Call4: a PRE-EXISTING one
+// (copied through from the original, correctly-compiled body) already has its
+// window accounted for in the function's original frameSize - a call site's
+// window sits just above whatever is locally live at that point, not
+// necessarily at the body's global max register, so adding the same padding
+// again on top of an already-correct frameSize over-counts for a large,
+// multi-call-site function (regression caught by
+// tests/integration/patcher/test_editor_shared_bytecode.py's overflow-function
+// tests, whose body legitimately contains many pre-existing Call1..Call4).
+// Returns 0 if `ir` uses no registers and inserts no Call1..Call4.
+//
+// `trustPreExistingCallWindows`: true for set_function_body, where an
+// instruction with `origByteOffset >= 0` really did come from the original,
+// already-correctly-compiled body (see above). add_function has no such
+// original - every instruction is new regardless of what its origByteOffset
+// happens to carry (the CLI reuses that field positionally for its own seed
+// bookkeeping) - so it passes false and every Call1..Call4 counts.
+uint32_t computeMinSafeFrameSize(const OpcodeInfo* table, const std::vector<AsmInstr>& ir,
+                                 bool trustPreExistingCallWindows) {
+    uint32_t maxReg         = 0;
+    bool     anyReg         = false;
+    uint32_t maxCallOverhead = 0;
+    for (const AsmInstr& a : ir) {
+        const OpcodeInfo& info = table[a.opcode];
+        if (!info.mnemonic)
+            continue;  // unknown opcodes are rejected elsewhere; skip here
+        const uint8_t numOperands = std::min<uint8_t>(
+            info.numOperands, static_cast<uint8_t>(a.operands.size()));
+        for (uint8_t k = 0; k < numOperands; ++k) {
+            if (info.operands[k] == Operand::Type::Reg8 ||
+                info.operands[k] == Operand::Type::Reg32) {
+                anyReg = true;
+                const uint32_t reg = static_cast<uint32_t>(a.operands[k]);
+                if (reg > maxReg) maxReg = reg;
+            }
+        }
+        if (trustPreExistingCallWindows && a.origByteOffset >= 0)
+            continue;  // pre-existing instruction: its call window, if any, is
+                       // already covered by the original frameSize
+        const CallArgInfo ci = callArgInfo(info.mnemonic);
+        if (ci.isCall) {
+            const uint32_t overhead = kCallerExtraRegistersAtEnd + ci.fixedArgs;
+            if (overhead > maxCallOverhead) maxCallOverhead = overhead;
+        }
+    }
+    return (anyReg ? maxReg + 1 : 0) + maxCallOverhead;
 }
 
 // SmallFuncHeader of the function appended by add_function().
@@ -275,12 +340,6 @@ void Module::set_function_body(uint32_t funcIdx, std::vector<AsmInstr> ir,
 
     FuncState& fsRef = funcs_[funcIdx];
 
-    // SmallFuncHeader.frameSize is 7 bits; overflowed functions have a 32-bit field.
-    if (!fsRef.overflowed && frameSize > 127)
-        throw std::runtime_error("Module::set_function_body: frameSize " +
-                                 std::to_string(frameSize) + " > 127 (7-bit field); "
-                                 "would need promotion to overflow (not supported)");
-
     // Shared bytecode without editAll would need a private clone.
     if (fsRef.sharedBody && !editAll)
         throw std::runtime_error(
@@ -288,22 +347,6 @@ void Module::set_function_body(uint32_t funcIdx, std::vector<AsmInstr> ir,
             "bytecode with " + std::to_string(fsRef.shareGroup.size()) +
             " functions - pass editAll=true to modify them all "
             "(a private clone of a single function is not supported)");
-
-    // Growing frameSize on a function with an exception handler crashes the
-    // Hermes runtime (SIGSEGV on the throw path). With editAll the new
-    // frameSize goes to every member of the group, so the check covers all of them.
-    if (frameSize > fsRef.origFrameSize) {
-        int64_t ehIdx = fsRef.hasEH ? static_cast<int64_t>(funcIdx) : -1;
-        if (ehIdx < 0 && editAll && fsRef.sharedBody)
-            for (uint32_t g : fsRef.shareGroup)
-                if (funcs_[g].hasEH) { ehIdx = g; break; }
-        if (ehIdx >= 0)
-            throw std::runtime_error(
-                "Module: cannot increase frameSize on a function with an exception "
-                "handler (function " + std::to_string(ehIdx) + ") - the inserted "
-                "instruction must use only registers < " +
-                std::to_string(fsRef.origFrameSize));
-    }
 
     const OpcodeInfo* table = getOpcodeTable(version_);
     if (!table)
@@ -329,10 +372,43 @@ void Module::set_function_body(uint32_t funcIdx, std::vector<AsmInstr> ir,
             throw std::runtime_error("Module: inserting SwitchImm is not supported");
     }
 
-    fsRef.dirty        = true;
-    fsRef.editAll      = editAll && fsRef.sharedBody;
-    fsRef.newIr        = std::move(ir);
-    fsRef.newFrameSize = frameSize;
+    // Raise the caller's frameSize to a safe minimum if it's too small for the
+    // registers/call window `ir` actually uses (see computeMinSafeFrameSize).
+    // Pre-existing Call1..Call4 (copied through from the original body) are
+    // trusted: this is a replacement of an already-compiled function.
+    const uint32_t safeMin = computeMinSafeFrameSize(table, ir, /*trustPreExistingCallWindows=*/true);
+    uint32_t effectiveFrameSize = frameSize;
+    const bool frameSizeBumped  = safeMin > effectiveFrameSize;
+    if (frameSizeBumped) effectiveFrameSize = safeMin;
+
+    // SmallFuncHeader.frameSize is 7 bits; overflowed functions have a 32-bit field.
+    if (!fsRef.overflowed && effectiveFrameSize > 127)
+        throw std::runtime_error("Module::set_function_body: frameSize " +
+                                 std::to_string(effectiveFrameSize) + " > 127 (7-bit field); "
+                                 "would need promotion to overflow (not supported)");
+
+    // Growing frameSize on a function with an exception handler crashes the
+    // Hermes runtime (SIGSEGV on the throw path). With editAll the new
+    // frameSize goes to every member of the group, so the check covers all of them.
+    if (effectiveFrameSize > fsRef.origFrameSize) {
+        int64_t ehIdx = fsRef.hasEH ? static_cast<int64_t>(funcIdx) : -1;
+        if (ehIdx < 0 && editAll && fsRef.sharedBody)
+            for (uint32_t g : fsRef.shareGroup)
+                if (funcs_[g].hasEH) { ehIdx = g; break; }
+        if (ehIdx >= 0)
+            throw std::runtime_error(
+                "Module: cannot increase frameSize on a function with an exception "
+                "handler (function " + std::to_string(ehIdx) + ") - the inserted "
+                "instruction must use only registers < " +
+                std::to_string(fsRef.origFrameSize));
+    }
+
+    fsRef.dirty              = true;
+    fsRef.editAll            = editAll && fsRef.sharedBody;
+    fsRef.newIr              = std::move(ir);
+    fsRef.newFrameSize       = effectiveFrameSize;
+    fsRef.frameSizeBumped    = frameSizeBumped;
+    fsRef.requestedFrameSize = frameSize;
 }
 
 uint32_t Module::queueNewString(const char* who, const std::string& value, StringKind kind) {
@@ -343,7 +419,17 @@ uint32_t Module::queueNewString(const char* who, const std::string& value, Strin
             throw std::invalid_argument(
                 std::string(who) + ": non-ASCII character - only ASCII strings can be "
                 "added (a string with other characters is stored as UTF-16, not supported)");
-    pendingStrings_.push_back({value, kind});
+    pendingStrings_.push_back({value, kind, /*isUtf16=*/false});
+    return origStringCount_ + static_cast<uint32_t>(pendingStrings_.size()) - 1;
+}
+
+uint32_t Module::queueNewStringRaw(const char* who, const std::string& bytes, bool isUtf16,
+                                   StringKind kind) {
+    if (bytes.empty())
+        throw std::invalid_argument(std::string(who) + ": empty string");
+    if (isUtf16 && (bytes.size() % 2 != 0))
+        throw std::invalid_argument(std::string(who) + ": odd byte size on a UTF-16 string");
+    pendingStrings_.push_back({bytes, kind, isUtf16});
     return origStringCount_ + static_cast<uint32_t>(pendingStrings_.size()) - 1;
 }
 
@@ -353,6 +439,10 @@ uint32_t Module::add_string(const std::string& value) {
 
 uint32_t Module::add_identifier(const std::string& value) {
     return queueNewString("Module::add_identifier", value, StringKind::Identifier);
+}
+
+uint32_t Module::add_string_raw(const std::string& bytes, bool isUtf16, StringKind kind) {
+    return queueNewStringRaw("Module::add_string_raw", bytes, isUtf16, kind);
 }
 
 void Module::set_string_value(uint32_t idx, const std::string& newBytes) {
@@ -591,10 +681,6 @@ void Module::resize_literal(uint32_t funcIdx, uint32_t instrOffset, bool isObjec
 uint32_t Module::add_function(std::vector<AsmInstr> ir, uint32_t frameSize) {
     if (ir.empty())
         throw std::runtime_error("Module::add_function: empty body");
-    if (frameSize > 127)
-        throw std::runtime_error("Module::add_function: frameSize " +
-                                 std::to_string(frameSize) + " > 127 (7-bit field) - "
-                                 "would need promotion to overflow (not supported)");
     if (pendingNewFunction_)
         throw std::runtime_error(
             "Module::add_function: an add_function is already queued - only one "
@@ -612,9 +698,25 @@ uint32_t Module::add_function(std::vector<AsmInstr> ir, uint32_t frameSize) {
             throw std::runtime_error("Module::add_function: SwitchImm not supported");
     }
 
+    // Raise the caller's frameSize to a safe minimum if it's too small for the
+    // registers/call window `ir` actually uses (see computeMinSafeFrameSize).
+    // No original body exists for a brand-new function, so every
+    // Call1..Call4 counts regardless of its origByteOffset.
+    const uint32_t safeMin = computeMinSafeFrameSize(table, ir, /*trustPreExistingCallWindows=*/false);
+    uint32_t effectiveFrameSize = frameSize;
+    const bool frameSizeBumped  = safeMin > effectiveFrameSize;
+    if (frameSizeBumped) effectiveFrameSize = safeMin;
+
+    if (effectiveFrameSize > 127)
+        throw std::runtime_error("Module::add_function: frameSize " +
+                                 std::to_string(effectiveFrameSize) + " > 127 (7-bit field) - "
+                                 "would need promotion to overflow (not supported)");
+
     PendingFunction pf;
-    pf.ir        = std::move(ir);
-    pf.frameSize = frameSize;
+    pf.ir                 = std::move(ir);
+    pf.frameSize          = effectiveFrameSize;
+    pf.frameSizeBumped    = frameSizeBumped;
+    pf.requestedFrameSize = frameSize;
     pendingNewFunction_ = std::move(pf);
     return static_cast<uint32_t>(funcs_.size());
 }
@@ -642,19 +744,24 @@ Module::StringSections Module::buildStringSections() const {
         for (const PendingString& ps : pendingStrings_) {
             const std::string& s = ps.value;
             const uint32_t offRel = static_cast<uint32_t>(ss.storage.size());
-            const uint32_t len    = static_cast<uint32_t>(s.size());
+            // `length` in the string table is a CHARACTER count: byte count for
+            // 8-bit entries, byte count / 2 for UTF-16 ones (mirrors
+            // set_string_value's newCharLen below).
+            const uint32_t len = ps.isUtf16
+                ? static_cast<uint32_t>(s.size() / 2)
+                : static_cast<uint32_t>(s.size());
             ss.storage.insert(ss.storage.end(), s.begin(), s.end());
 
             if (len < 255) {
                 if (offRel >= (1u << 23))
                     throw std::runtime_error("Module: string storage beyond 8 MB - not handled");
-                appendU32(ss.stringTable, packSmallString(false, offRel, len));
+                appendU32(ss.stringTable, packSmallString(ps.isUtf16, offRel, len));
             } else {
                 // Sentinel length == 255; `offset` is the index of the new slot in
                 // the overflow table (existing slots + those added so far), which
                 // is where the VM reads it: overflowTable[small.offset].
                 appendU32(ss.stringTable,
-                          packSmallString(false, ss.overflowCount + addedOverflow, 255));
+                          packSmallString(ps.isUtf16, ss.overflowCount + addedOverflow, 255));
                 appendU32(ss.overflowTable, offRel);     // OverflowStringTableEntry
                 appendU32(ss.overflowTable, len);
                 ++addedOverflow;
@@ -684,7 +791,8 @@ Module::StringSections Module::buildStringSections() const {
             }
             if (ps.kind == StringKind::Identifier)
                 appendU32(ss.idHash, identifier_hash(
-                    reinterpret_cast<const uint8_t*>(ps.value.data()), ps.value.size(), false));
+                    reinterpret_cast<const uint8_t*>(ps.value.data()), ps.value.size(),
+                    ps.isUtf16));
         }
 
         ss.stringCount   += k;
@@ -1050,7 +1158,21 @@ std::vector<uint8_t> Module::serialize() {
             warnings_.push_back(
                 "modified " + std::to_string(funcs_[i].shareGroup.size()) +
                 " functions that shared the same bytecode");
+        if (funcs_[i].frameSizeBumped)
+            warnings_.push_back(
+                "function " + std::to_string(i) + ": frameSize raised from " +
+                std::to_string(funcs_[i].requestedFrameSize) + " to " +
+                std::to_string(funcs_[i].newFrameSize) + " - the requested value "
+                "did not cover the registers/call-argument window used by the new "
+                "body");
     }
+    if (pendingNewFunction_ && pendingNewFunction_->frameSizeBumped)
+        warnings_.push_back(
+            "add_function: frameSize raised from " +
+            std::to_string(pendingNewFunction_->requestedFrameSize) + " to " +
+            std::to_string(pendingNewFunction_->frameSize) + " - the requested "
+            "value did not cover the registers/call-argument window used by the "
+            "new body");
 
     return out;
 }
