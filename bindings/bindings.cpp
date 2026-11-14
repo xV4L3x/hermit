@@ -544,16 +544,16 @@ PYBIND11_MODULE(_libhbc, m) {
         .def_readonly("result",   &hbc::InstrValues::result)
     ;
 
-    py::class_<hbc::ModuleInfo>(m, "ModuleInfo")
-        .def_readonly("function_index", &hbc::ModuleInfo::functionIndex)
-        .def_readonly("module_id",      &hbc::ModuleInfo::moduleId)
-        .def_readonly("dependencies",   &hbc::ModuleInfo::dependencies)
-        .def_readonly("dependencies_known", &hbc::ModuleInfo::dependenciesKnown)
-        .def_readonly("define_offset",  &hbc::ModuleInfo::defineOffset)
+    py::class_<hbc::MetroModule>(m, "MetroModule")
+        .def_readonly("function_index", &hbc::MetroModule::functionIndex)
+        .def_readonly("module_id",      &hbc::MetroModule::moduleId)
+        .def_readonly("dependencies",   &hbc::MetroModule::dependencies)
+        .def_readonly("dependencies_known", &hbc::MetroModule::dependenciesKnown)
+        .def_readonly("define_offset",  &hbc::MetroModule::defineOffset)
     ;
 
     // CJS Module Table (native `hermes -commonjs` mode, never present in a
-    // Metro-bundled bundle -- see ModuleInfo/recover_modules() for that case).
+    // Metro-bundled bundle -- see MetroModule/recover_modules() for that case).
     py::class_<hbc::BigIntInfo>(m, "BigIntInfo")
         .def_readonly("index",       &hbc::BigIntInfo::index)
         .def_readonly("offset",      &hbc::BigIntInfo::offset)

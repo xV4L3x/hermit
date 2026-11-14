@@ -26,6 +26,7 @@
 #include "analysis/analysis.h"
 #include "analysis/dataflow.h"
 #include "util/slp.h"
+#include "format/opcode_categories.h"
 
 #include <algorithm>
 #include <cctype>
@@ -130,23 +131,12 @@ V makeProp(const V& base, const std::string& name) {
     V v; v.kind = VKind::Prop; v.name = name; v.base = std::make_shared<const V>(base); return v;
 }
 
-bool isClosureCreation(const std::string& mn) {
-    return mn == "CreateClosure" || mn == "CreateClosureLongIndex" ||
-           mn == "CreateGeneratorClosure" || mn == "CreateGeneratorClosureLongIndex" ||
-           mn == "CreateAsyncClosure" || mn == "CreateAsyncClosureLongIndex";
-}
-
-bool isGetById(const std::string& mn) {
-    return mn == "GetById" || mn == "GetByIdShort" || mn == "GetByIdLong" ||
-           mn == "TryGetById" || mn == "TryGetByIdLong";
-}
-
 // Everything the transfer function needs besides the register state.
 struct Ctx {
     const HBCFile&                     file;
     uint32_t                           function;
     const std::vector<std::string>&    strings;
-    const ModuleInfo*                  module;     // nullptr outside modules
+    const MetroModule*                  module;     // nullptr outside modules
     bool                               isFactory;  // the function is the module's factory
     const std::map<SlotKey, V>&        slots;      // agreed slot values
     const std::map<ParamKey, V>&       params;     // agreed parameter values
@@ -218,7 +208,7 @@ std::optional<V> resultOf(const Instruction& instr, const RegState& st, const Ct
         return std::nullopt;
     }
 
-    if ((mn == "LoadFromEnvironment" || mn == "LoadFromEnvironmentL")) {
+    if (isEnvLoad(mn)) {
         auto a = c.envAt.find(instr.offset);
         if (a == c.envAt.end() || !a->second.resolved) return std::nullopt;
         auto s = c.slots.find({a->second.env, a->second.slot});
@@ -309,7 +299,7 @@ bool isPutById(const std::string& mn) {
 
 FunctionRun runFunction(uint32_t f, const Ctx& c) {
     FunctionRun run;
-    const CFGData cfg = c.file.cfg(f);
+    const CFGData& cfg = c.file.cfg(f);
     const auto in = forwardDataflow(
         cfg, RegState{},
         [&](const BasicBlock& bb, RegState& st) {
@@ -336,8 +326,7 @@ FunctionRun runFunction(uint32_t f, const Ctx& c) {
             iv.result = resultOf(instr, st, c);
             any |= iv.result.has_value();
 
-            if (mn == "StoreToEnvironment" || mn == "StoreToEnvironmentL" ||
-                mn == "StoreNPToEnvironment" || mn == "StoreNPToEnvironmentL") {
+            if (isEnvStore(mn)) {
                 auto a = c.envAt.find(instr.offset);
                 if (a != c.envAt.end() && a->second.resolved && ops.size() >= 3)
                     run.stores.push_back({{a->second.env, a->second.slot}, regValue(st, ops[2])});
@@ -462,7 +451,7 @@ FunctionRun runFunction(uint32_t f, const Ctx& c) {
 bool looksLikeInteropRequireDefault(const HBCFile& file, uint32_t f) {
     const auto& funcs = file.functions();
     if (f >= funcs.size() || funcs[f].paramCount != 2) return false;
-    const auto instrs = file.disasm(f);
+    const auto& instrs = file.disasm(f);
     if (instrs.size() > 16) return false;
     const auto& strings = file.strings();
     bool esModule = false, defaultKey = false, newObject = false;
@@ -671,8 +660,8 @@ ValueGroup computeValueGroup(
     const std::function<const ValueGroup*(int64_t)>& groupResult)
 {
     ValueGroup out;
-    const ModuleInfo* module = nullptr;
-    std::vector<ModuleInfo> mods;
+    const MetroModule* module = nullptr;
+    std::vector<MetroModule> mods;
     if (groupId >= 0) {
         mods = self.recover_modules();
         for (const auto& m : mods)

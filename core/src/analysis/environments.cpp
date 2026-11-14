@@ -15,6 +15,7 @@
 
 #include "analysis/analysis.h"
 #include "analysis/dataflow.h"
+#include "format/opcode_categories.h"
 
 #include <algorithm>
 #include <map>
@@ -32,24 +33,8 @@ struct EnvRef {
 
 using EnvState = std::map<uint32_t, EnvRef>;  // register -> environment
 
-bool isClosureCreation(const std::string& mn) {
-    return mn == "CreateClosure" || mn == "CreateClosureLongIndex" ||
-           mn == "CreateGeneratorClosure" || mn == "CreateGeneratorClosureLongIndex" ||
-           mn == "CreateAsyncClosure" || mn == "CreateAsyncClosureLongIndex" ||
-           mn == "CreateGenerator" || mn == "CreateGeneratorLongIndex";
-}
-
-bool isEnvLoad(const std::string& mn) {
-    return mn == "LoadFromEnvironment" || mn == "LoadFromEnvironmentL";
-}
-
-bool isEnvStore(const std::string& mn) {
-    return mn == "StoreToEnvironment" || mn == "StoreToEnvironmentL" ||
-           mn == "StoreNPToEnvironment" || mn == "StoreNPToEnvironmentL";
-}
-
 bool isRelevant(const std::string& mn) {
-    return isClosureCreation(mn) || isEnvLoad(mn) || isEnvStore(mn) ||
+    return isClosureOrGenerator(mn) || isEnvLoad(mn) || isEnvStore(mn) ||
            mn == "CreateEnvironment" || mn == "CreateInnerEnvironment" ||
            mn == "GetEnvironment";
 }
@@ -82,13 +67,13 @@ struct LocalFacts {
 
 LocalFacts localFacts(const HBCFile& self, uint32_t f) {
     LocalFacts facts;
-    const auto instrs = self.disasm(f);
+    const auto& instrs = self.disasm(f);
     bool relevant = false;
     for (const auto& i : instrs)
         if (isRelevant(i.mnemonic)) { relevant = true; break; }
     if (!relevant) return facts;
 
-    const CFGData cfg = self.cfg(f);
+    const CFGData& cfg = self.cfg(f);
     const auto in = forwardDataflow(
         cfg, EnvState{},
         [](const BasicBlock& bb, EnvState& st) {
@@ -113,7 +98,7 @@ LocalFacts localFacts(const HBCFile& self, uint32_t f) {
                 facts.ownEnvs.push_back({instr.offset, false, std::nullopt});
             } else if (mn == "CreateInnerEnvironment" && ops.size() >= 2) {
                 facts.ownEnvs.push_back({instr.offset, true, lookup(st, ops[1])});
-            } else if (isClosureCreation(mn) && ops.size() >= 3) {
+            } else if (isClosureOrGenerator(mn) && ops.size() >= 3) {
                 facts.closures.push_back({ops[2].u32, lookup(st, ops[1])});
             } else if (isEnvLoad(mn) && ops.size() >= 3) {
                 facts.accesses.push_back({instr.offset, false, ops[2].u32, lookup(st, ops[1])});

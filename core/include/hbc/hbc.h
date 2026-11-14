@@ -257,7 +257,7 @@ struct LiteralSite {
 // order of the factory's dependencyMap (`_$$_REQUIRE(dependencyMap[i])`). A
 // nullopt entry is a `null` in the dependencyMap: an optional dependency
 // (`try { require('x') } catch {}`) that Metro could not resolve at build time.
-struct ModuleInfo {
+struct MetroModule {
     uint32_t functionIndex = 0;          // factory function
     uint32_t moduleId      = 0;
     std::vector<std::optional<uint32_t>> dependencies;  // dependencyMap, in order
@@ -512,14 +512,14 @@ public:
     uint32_t                         array_buffer_offset()          const;
     uint32_t                         obj_key_buffer_offset()        const;
     uint32_t                         obj_value_buffer_offset()      const;
-    std::vector<Instruction>         disasm(uint32_t functionIndex) const;
-    CFGData                          cfg(uint32_t functionIndex)    const;
+    const std::vector<Instruction>&  disasm(uint32_t functionIndex) const;
+    const CFGData&                   cfg(uint32_t functionIndex)    const;
     std::vector<StringXRef>          string_xrefs()                 const;
-    std::vector<CallSite>            call_graph()                   const;
-    std::vector<ModuleInfo>          recover_modules()              const;
+    const std::vector<CallSite>&     call_graph()                   const;
+    const std::vector<MetroModule>&   recover_modules()              const;
     // Metro entry points: the module ids passed to `__r(id)` in the global
     // function, in call order (empty if the file is not a Metro bundle).
-    std::vector<uint32_t>            metro_entry_modules()          const;
+    const std::vector<uint32_t>&     metro_entry_modules()          const;
     // Closure environments, see EnvKey. env_accesses(): every environment
     // load/store of a function, in offset order. environments(): the
     // environments a function creates. captured_environment(): the environment
@@ -549,7 +549,7 @@ public:
     // exports leave the value as it is.
     AbstractValue                    resolve_value(const AbstractValue& v) const;
     // Calls of `functionIndex` whose callee resolves to a function, in offset order.
-    std::vector<ResolvedCall>        resolved_calls(uint32_t functionIndex) const;
+    const std::vector<ResolvedCall>& resolved_calls(uint32_t functionIndex) const;
     // Calls of `functionIndex` from its own module and every module that imports
     // it, directly or through other modules (dependencyMap), or from the
     // functions outside modules for a function outside modules.

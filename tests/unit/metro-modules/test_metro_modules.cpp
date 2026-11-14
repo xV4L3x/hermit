@@ -33,7 +33,7 @@ const std::string CORPUS = HBC_CORPUS_DIR;
 
 using Deps = std::vector<std::optional<uint32_t>>;
 
-const hbc::ModuleInfo* findModule(const std::vector<hbc::ModuleInfo>& mods, uint32_t id) {
+const hbc::MetroModule* findModule(const std::vector<hbc::MetroModule>& mods, uint32_t id) {
     for (const auto& m : mods)
         if (m.moduleId == id) return &m;
     return nullptr;

@@ -5,6 +5,7 @@
 #include "cfg/cfg.h"
 #include "analysis/dataflow.h"
 #include "util/slp.h"
+#include "format/opcode_categories.h"
 
 #include <algorithm>
 #include <cctype>
@@ -380,10 +381,9 @@ static std::string emitExpressionImpl(const Instruction& instr, const DecompileC
             return ctx.envSlotNames[slot];
         return "envSlot_" + std::to_string(slot);
     };
-    if ((mn == "StoreToEnvironment" || mn == "StoreToEnvironmentL" ||
-         mn == "StoreNPToEnvironment" || mn == "StoreNPToEnvironmentL") && op.size() >= 3)
+    if (isEnvStore(mn) && op.size() >= 3)
         return envSlotName(op[0].u32, op[1].u32) + " = " + reg(2) + ";";
-    if ((mn == "LoadFromEnvironment" || mn == "LoadFromEnvironmentL") && op.size() >= 3) {
+    if (isEnvLoad(mn) && op.size() >= 3) {
         if (annot && !annot->loadValue.empty())
             return reg(0) + " = " + annot->loadValue + ";  // " + envSlotName(op[1].u32, op[2].u32);
         return reg(0) + " = " + envSlotName(op[1].u32, op[2].u32) + ";";
@@ -1025,7 +1025,7 @@ std::string HBCFile::decompile(uint32_t functionIndex) const {
                     iv.result && iv.result->kind == K::Module)
                     an.comment = render(*iv.result);
             }
-            if (mn.rfind("LoadFromEnvironment", 0) == 0 && iv.result)
+            if (isEnvLoad(mn) && iv.result)
                 an.loadValue = render(*iv.result);
             annots[iv.offset] = std::move(an);
         }

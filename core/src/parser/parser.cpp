@@ -58,6 +58,8 @@ struct HBCFile::Impl {
     mutable std::map<int64_t, std::unique_ptr<ValueGroup>> valueGroups;
     mutable std::set<int64_t>                        valueGroupsInProgress;
     mutable std::map<uint32_t, std::vector<ResolvedCall>> resolvedCalls;  // per function
+    mutable std::map<uint32_t, std::vector<Instruction>> disasmCache;     // per function
+    mutable std::map<uint32_t, CFGData>                  cfgCache;        // per function
     mutable std::optional<std::vector<CJSModuleInfo>> cjsModules;
     mutable std::optional<std::vector<BigIntInfo>>   bigInts;
     mutable std::optional<std::vector<LiteralSite>>  literalSites;
@@ -188,19 +190,19 @@ const std::vector<StringEntry>& HBCFile::string_entries() const {
     return *impl_->stringEntries;
 }
 
-std::vector<CallSite> HBCFile::call_graph() const {
+const std::vector<CallSite>& HBCFile::call_graph() const {
     if (!impl_->callGraph)
         impl_->callGraph = computeCallGraph(*this);
     return *impl_->callGraph;
 }
 
-std::vector<ModuleInfo> HBCFile::recover_modules() const {
+const std::vector<MetroModule>& HBCFile::recover_modules() const {
     if (!impl_->modules)
         impl_->modules = computeModules(*this);
     return impl_->modules->modules;
 }
 
-std::vector<uint32_t> HBCFile::metro_entry_modules() const {
+const std::vector<uint32_t>& HBCFile::metro_entry_modules() const {
     if (!impl_->modules)
         impl_->modules = computeModules(*this);
     return impl_->modules->entries;
@@ -294,7 +296,7 @@ AbstractValue HBCFile::resolve_value(const AbstractValue& v) const {
     });
 }
 
-std::vector<ResolvedCall> HBCFile::resolved_calls(uint32_t functionIndex) const {
+const std::vector<ResolvedCall>& HBCFile::resolved_calls(uint32_t functionIndex) const {
     if (auto memo = impl_->resolvedCalls.find(functionIndex); memo != impl_->resolvedCalls.end())
         return memo->second;
     const auto flow = value_flow(functionIndex);  // checks the index
@@ -322,8 +324,7 @@ std::vector<ResolvedCall> HBCFile::resolved_calls(uint32_t functionIndex) const 
         rc.calleeValue = callee;
         out.push_back(std::move(rc));
     }
-    impl_->resolvedCalls[functionIndex] = out;
-    return out;
+    return impl_->resolvedCalls[functionIndex] = std::move(out);
 }
 
 std::vector<CallerSite> HBCFile::function_callers(uint32_t functionIndex) const {
@@ -465,7 +466,7 @@ uint32_t HBCFile::obj_value_buffer_offset() const { return offsetOfSection(*this
 // Also updates isAsync/isGenerator in the cached FunctionInfo: they are not
 // stored in the header, so they are detected from the CreateGenerator / Await
 // opcodes the first time the function is disassembled.
-std::vector<Instruction> HBCFile::disasm(uint32_t functionIndex) const {
+const std::vector<Instruction>& HBCFile::disasm(uint32_t functionIndex) const {
     const auto& funcs = functions();
 
     if (functionIndex >= funcs.size()) {
@@ -473,6 +474,9 @@ std::vector<Instruction> HBCFile::disasm(uint32_t functionIndex) const {
             "disasm: function index " + std::to_string(functionIndex) +
             " out of range (functionCount=" + std::to_string(funcs.size()) + ")");
     }
+
+    if (auto it = impl_->disasmCache.find(functionIndex); it != impl_->disasmCache.end())
+        return it->second;
 
     const FunctionInfo& fi = funcs[functionIndex];
     auto result = disassemble(
@@ -490,19 +494,22 @@ std::vector<Instruction> HBCFile::disasm(uint32_t functionIndex) const {
     (*impl_->functions)[functionIndex].isGenerator = hasCreateGenerator;
     (*impl_->functions)[functionIndex].isAsync     = hasAwait;
 
-    return result;
+    return impl_->disasmCache.emplace(functionIndex, std::move(result)).first->second;
 }
 
-CFGData HBCFile::cfg(uint32_t functionIndex) const {
+const CFGData& HBCFile::cfg(uint32_t functionIndex) const {
     const auto& funcs = functions();
     if (functionIndex >= funcs.size()) {
         throw std::out_of_range(
             "cfg: function index " + std::to_string(functionIndex) +
             " out of range (functionCount=" + std::to_string(funcs.size()) + ")");
     }
+    if (auto it = impl_->cfgCache.find(functionIndex); it != impl_->cfgCache.end())
+        return it->second;
     const FunctionInfo& fi = funcs[functionIndex];
-    auto instrs = disasm(functionIndex);
-    return buildCFG(instrs, fi.bytecodeSizeInBytes, version(), fi.exceptionHandlers);
+    const auto& instrs = disasm(functionIndex);
+    auto data = buildCFG(instrs, fi.bytecodeSizeInBytes, version(), fi.exceptionHandlers);
+    return impl_->cfgCache.emplace(functionIndex, std::move(data)).first->second;
 }
 
 // -----------------------------------------------------------------------------

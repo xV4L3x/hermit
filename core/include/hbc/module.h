@@ -43,6 +43,9 @@ struct AssembledFunction {
 // index), std::runtime_error (short jump with no Long variant, no convergence).
 AssembledFunction assemble_function(uint32_t version, std::vector<AsmInstr> ir);
 
+// The structural serializer: an editable in-memory image of a whole HBC file
+// (its "module" in the linker sense), rebuilt after structural edits. NOT a
+// JavaScript/Metro module -- that is `MetroModule` (recover_modules()).
 class Module {
 public:
     // Snapshot of `file`. Handles overflowed functions and real bundles

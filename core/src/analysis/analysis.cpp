@@ -2,6 +2,7 @@
 #include "analysis/dataflow.h"
 #include "hbc/hbc.h"
 #include "util/slp.h"
+#include "format/opcode_categories.h"
 #include <algorithm>
 #include <limits>
 #include <map>
@@ -19,10 +20,6 @@ void forEachInstruction(const HBCFile& f, Fn&& fn) {
     for (const auto& func : f.functions())
         for (const auto& instr : f.disasm(func.index))
             fn(func, instr);
-}
-
-bool isCreateClosure(const std::string& mnemonic) {
-    return mnemonic == "CreateClosure" || mnemonic == "CreateClosureLongIndex";
 }
 
 } // namespace
@@ -219,7 +216,7 @@ MetroModules computeModules(const HBCFile& self) {
     const auto& funcs   = self.functions();
     const auto& strings = self.strings();
     const auto& arrBuf  = self.array_buffer();
-    const auto instrs   = self.disasm(self.header().globalCodeIndex);
+    const auto& instrs  = self.disasm(self.header().globalCodeIndex);
 
     // Branch targets and handler starts: values are not propagated across them.
     std::unordered_set<uint32_t> joins;
@@ -253,7 +250,7 @@ MetroModules computeModules(const HBCFile& self) {
                     const RegValue* id = get(ops[4]);
                     const RegValue* dm = get(ops[5]);
                     if (is(f, RegValue::Kind::Closure) && is(id, RegValue::Kind::Int)) {
-                        ModuleInfo mod;
+                        MetroModule mod;
                         mod.functionIndex = f->num;
                         mod.moduleId      = id->num;
                         mod.defineOffset  = instr.offset;
@@ -280,8 +277,7 @@ MetroModules computeModules(const HBCFile& self) {
         RegValue v;  // Unknown unless modelled below
         if (mn == "GetGlobalObject") {
             v.kind = RegValue::Kind::GlobalObject;
-        } else if ((mn == "TryGetById" || mn == "TryGetByIdLong" || mn == "GetById" ||
-                    mn == "GetByIdShort" || mn == "GetByIdLong") && ops.size() >= 4) {
+        } else if (isGetById(mn) && ops.size() >= 4) {
             const RegValue* obj = get(ops[1]);
             // TryGetById is only emitted for global-object lookups.
             const bool onGlobal = mn.rfind("Try", 0) == 0 || is(obj, RegValue::Kind::GlobalObject);
@@ -291,7 +287,7 @@ MetroModules computeModules(const HBCFile& self) {
                 v.kind = RegValue::Kind::Global;
                 v.name = strings[sid];
             }
-        } else if (isCreateClosure(mn) && ops.size() >= 3) {
+        } else if (isPlainClosure(mn) && ops.size() >= 3) {
             if (ops[2].u32 < funcs.size()) {
                 v.kind = RegValue::Kind::Closure;
                 v.num  = ops[2].u32;
