@@ -15,6 +15,10 @@ Status legend: **[done]** shipped · **[wip]** partially implemented · **[plann
 - **[done]** Metro module reconstruction, steps 1–2: module recovery and
   module-aware analysis (`B30`, more steps planned).
 - **[done]** Full English translation of code and output (`B7`).
+- **[done]** `function_callers()` O(1) via a memoized whole-file reverse call
+  index (`B42`) — first call builds it once, later calls are map lookups.
+  `build_caller_index(progress)` pays that build up front with a progress
+  callback; the REPL's `xrefs ... callers` shows a determinate bar during it.
 
 ## Parser & format
 

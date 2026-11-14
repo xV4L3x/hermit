@@ -322,6 +322,25 @@ PYBIND11_MODULE(_libhbc, m) {
         .def("resolve_value",       &hbc::HBCFile::resolve_value, py::arg("value"))
         .def("resolved_calls",      &hbc::HBCFile::resolved_calls, py::arg("function_index"))
         .def("function_callers",    &hbc::HBCFile::function_callers, py::arg("function_index"))
+        .def("build_caller_index",
+             [](const hbc::HBCFile& self, const py::object& progress) {
+                 std::function<void(uint64_t, uint64_t)> cb;
+                 if (!progress.is_none())
+                     cb = [progress](uint64_t done, uint64_t total) {
+                         py::gil_scoped_acquire gil;
+                         progress(done, total);
+                     };
+                 {
+                     py::gil_scoped_release release;
+                     self.build_caller_index(cb);
+                 }
+             },
+             py::arg("progress") = py::none(),
+             "Builds the reverse call index that function_callers() uses, up front. "
+             "This is the one-time heavy pass (it resolves calls across every "
+             "function); afterwards function_callers() is O(1). progress, if given, "
+             "is called as progress(done, total) while functions are scanned. "
+             "No-op if the index is already built.")
         .def("cjs_modules",        &hbc::HBCFile::cjs_modules)
         .def("bigints",            &hbc::HBCFile::bigints)
         .def("identifier_hashes",  &hbc::HBCFile::identifier_hashes)

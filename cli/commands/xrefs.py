@@ -1,10 +1,38 @@
 """`xrefs` command: cross-references of strings, functions and Metro modules."""
 
+from rich.progress import (
+    BarColumn,
+    MofNCompleteColumn,
+    Progress,
+    TextColumn,
+    TimeRemainingColumn,
+)
+
 from cli import display
 from cli import modules_view
 
 
 class XrefsCommand:
+    def _ensure_caller_index(self, hbc) -> None:
+        """Builds the reverse call index up front, with a progress bar.
+
+        The first function_callers() on a big bundle resolves calls across every
+        function (tens of seconds on a 150k-function app); doing it here, with a
+        determinate bar, keeps the REPL from looking frozen. A no-op once built,
+        so the bar only really shows the first time."""
+        with Progress(
+            TextColumn("[progress.description]{task.description}"),
+            BarColumn(),
+            MofNCompleteColumn(),
+            TimeRemainingColumn(),
+            console=self.console,
+            transient=True,
+        ) as progress:
+            task = progress.add_task("indexing callers (one-time)", total=None)
+            hbc.build_caller_index(
+                lambda done, total: progress.update(task, completed=done, total=total)
+            )
+
     def cmd_xrefs(self, args: list[str]) -> None:
         """xrefs [string:<value|N>] [func:<N|name>|module:<id> [--callees]]  (callers by default, --callees for callees; string refs include array/object literal elements; module: callers = modules that include it, callees = modules it includes)"""
         proj = self._require_project()
@@ -53,8 +81,8 @@ class XrefsCommand:
             funcs = proj.hbc.functions()
 
             if show_callers:
-                with self.console.status("resolving calls in the importing modules..."):
-                    rows = display.function_callers_rows(proj.hbc, func, funcs, cg)
+                self._ensure_caller_index(proj.hbc)
+                rows = display.function_callers_rows(proj.hbc, func, funcs, cg)
                 title = f"xrefs  func:{func.index} ({func.name})  callers"
                 self._show_rows(rows, title)
 

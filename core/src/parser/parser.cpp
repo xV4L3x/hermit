@@ -58,6 +58,9 @@ struct HBCFile::Impl {
     mutable std::map<int64_t, std::unique_ptr<ValueGroup>> valueGroups;
     mutable std::set<int64_t>                        valueGroupsInProgress;
     mutable std::map<uint32_t, std::vector<ResolvedCall>> resolvedCalls;  // per function
+    // Reverse call index: callee function index -> its callers. Built once over
+    // the whole file (forces every function's resolved_calls), then O(1) lookups.
+    mutable std::optional<std::map<uint32_t, std::vector<CallerSite>>> callerIndex;
     mutable std::map<uint32_t, std::vector<Instruction>> disasmCache;     // per function
     mutable std::map<uint32_t, CFGData>                  cfgCache;        // per function
     mutable std::optional<std::vector<CJSModuleInfo>> cjsModules;
@@ -327,36 +330,41 @@ const std::vector<ResolvedCall>& HBCFile::resolved_calls(uint32_t functionIndex)
     return impl_->resolvedCalls[functionIndex] = std::move(out);
 }
 
+// Builds the reverse call index for the whole file in one pass. This is the
+// expensive step (it forces resolved_calls, and thus the value analysis, over
+// every function), but it runs at most once per file: every function_callers()
+// call after it is an O(1) map lookup. The earlier design scanned the callee's
+// module-importer set on each call, which recomputed value groups per call and
+// cost tens of seconds for a function reached from many modules. Iterating all
+// functions ascending preserves the previous (caller, offset) ordering and is a
+// superset by construction: a resolved call into `callee` can only come from a
+// function whose group already references `callee`'s closure, i.e. the groups
+// the old importer walk considered.
+static const std::map<uint32_t, std::vector<CallerSite>>&
+callerIndex(const HBCFile& self, std::optional<std::map<uint32_t, std::vector<CallerSite>>>& memo,
+            const std::function<void(uint64_t, uint64_t)>& progress) {
+    if (memo) return *memo;
+    std::map<uint32_t, std::vector<CallerSite>> index;
+    const size_t n = self.functions().size();
+    for (uint32_t f = 0; f < n; ++f) {
+        if (progress && (f % 1024 == 0)) progress(f, n);
+        for (const auto& rc : self.resolved_calls(f))
+            index[rc.callee].push_back({f, rc.offset, rc.via, rc.isConstruct});
+    }
+    if (progress) progress(n, n);
+    memo = std::move(index);
+    return *memo;
+}
+
+void HBCFile::build_caller_index(const std::function<void(uint64_t, uint64_t)>& progress) const {
+    callerIndex(*this, impl_->callerIndex, progress);
+}
+
 std::vector<CallerSite> HBCFile::function_callers(uint32_t functionIndex) const {
     checkFunctionIndex(*this, functionIndex, "function_callers");
-    if (!impl_->functionGroups) impl_->functionGroups = computeFunctionGroups(*this);
-    const auto& groups = *impl_->functionGroups;
-    const int64_t home = groups[functionIndex];
-
-    // Candidate groups: the function's own, plus every module that imports it
-    // (reverse dependencyMap edges, transitively: re-exports).
-    std::set<int64_t> candidates{home};
-    if (home >= 0) {
-        std::map<uint32_t, std::vector<uint32_t>> importers;
-        for (const auto& m : recover_modules())
-            for (const auto& d : m.dependencies)
-                if (d) importers[*d].push_back(m.moduleId);
-        std::vector<uint32_t> stack{static_cast<uint32_t>(home)};
-        while (!stack.empty()) {
-            const uint32_t m = stack.back();
-            stack.pop_back();
-            for (uint32_t i : importers[m])
-                if (candidates.insert(i).second) stack.push_back(i);
-        }
-    }
-    std::vector<CallerSite> out;
-    for (uint32_t f = 0; f < groups.size(); ++f) {
-        if (!candidates.count(groups[f])) continue;
-        for (const auto& rc : resolved_calls(f))
-            if (rc.callee == functionIndex)
-                out.push_back({f, rc.offset, rc.via, rc.isConstruct});
-    }
-    return out;
+    const auto& index = callerIndex(*this, impl_->callerIndex, {});
+    auto it = index.find(functionIndex);
+    return it == index.end() ? std::vector<CallerSite>{} : it->second;
 }
 
 std::optional<AbstractValue> HBCFile::env_slot_value(const EnvKey& env, uint32_t slot) const {

@@ -10,6 +10,7 @@
 #include <string>
 #include <optional>
 #include <vector>
+#include <functional>
 
 namespace hbc {
 
@@ -550,10 +551,17 @@ public:
     AbstractValue                    resolve_value(const AbstractValue& v) const;
     // Calls of `functionIndex` whose callee resolves to a function, in offset order.
     const std::vector<ResolvedCall>& resolved_calls(uint32_t functionIndex) const;
-    // Calls of `functionIndex` from its own module and every module that imports
-    // it, directly or through other modules (dependencyMap), or from the
-    // functions outside modules for a function outside modules.
+    // Every call that resolves to `functionIndex`, from anywhere in the file, in
+    // (caller, offset) order. Served from a reverse index built once over the
+    // whole file on the first call (which forces resolved_calls for every
+    // function); later calls are O(1). To show progress for that one-time build,
+    // or to pay its cost up front, call build_caller_index() first.
     std::vector<CallerSite>          function_callers(uint32_t functionIndex) const;
+    // Forces the reverse call index (what the first function_callers() builds) to
+    // be computed now. `progress(done, total)`, if given, is called periodically
+    // as the file's functions are scanned; no-op if the index already exists.
+    void                             build_caller_index(
+                                         const std::function<void(uint64_t, uint64_t)>& progress = {}) const;
     std::vector<CJSModuleInfo>       cjs_modules()                  const;
     // The BigInt Table decoded, one entry per header.bigIntCount (empty if none).
     const std::vector<BigIntInfo>&   bigints()                      const;
