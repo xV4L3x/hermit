@@ -1,5 +1,8 @@
 # The `cfg` REPL command also needs graph-easy, a Perl/CPAN tool (not a pip
 # package - can't be listed below). Install with: cpanm Graph::Easy
+#
+# Regenerating the type stub (bindings/genstub.py) needs pybind11-stubgen, a
+# dev-only tool not required at runtime: pip install pybind11-stubgen
 
 click==8.4.1
 iniconfig==2.3.0

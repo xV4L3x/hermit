@@ -308,7 +308,10 @@ table of the thesis.
 
 ## Python API
 
-The REPL is a thin layer over the `_libhbc` module, which you can use directly:
+The REPL is a thin layer over the `_libhbc` module, which you can use directly.
+[`doc/python-api.md`](doc/python-api.md) is the full method reference (analysis
+entry points, return shapes, recipes); a type stub ships next to the built module
+so editors autocomplete it.
 
 ```python
 import _libhbc
