@@ -14,7 +14,6 @@ every site that references it.
 from __future__ import annotations
 
 from prompt_toolkit.filters import Condition
-from prompt_toolkit.formatted_text import ANSI
 from prompt_toolkit.key_binding import KeyBindings
 
 import _libhbc
@@ -22,8 +21,8 @@ from cli import display
 from cli.project import IDENTIFIER_OPCODES
 from cli.editor.common import (
     CURSOR_STYLE, DIRTY_MARK_STYLE, ERR_STYLE, HINT_STYLE, TextBufferMixin,
-    apply_discard_cancel_bar, bind_abort, bind_exit_prompt, bind_text_input, input_bar,
-    run_screen, view_height,
+    apply_discard_cancel_bar, bind_abort, bind_exit_prompt, bind_text_input, follow_cursor,
+    input_bar, run_screen, scroll_body, view_height,
 )
 
 
@@ -487,18 +486,11 @@ def run_string_editor(str_idx=0, strings=(), kinds=(), entries=(), xrefs=(),
         vh = view_height()
         if state.mode == "site_pick":
             rows = _pick_rows()
-            sel_row = 4 + state.pick_sel
-            if sel_row < state.top:
-                state.top = sel_row
-            elif sel_row >= state.top + vh:
-                state.top = sel_row - vh + 1
-            state._max_top = max(0, len(rows) - vh)
-            state.top = max(0, min(state.top, state._max_top))
-            return ANSI("\n".join(rows[state.top:state.top + vh]))
-        rows = _body_rows()
-        state._max_top = max(0, len(rows) - vh)
-        state.top = max(0, min(state.top, state._max_top))
-        return ANSI("\n".join(rows[state.top:state.top + vh]))
+            state.top = follow_cursor(state.top, 4 + state.pick_sel, vh)
+        else:
+            rows = _body_rows()
+        body, state.top, state._max_top = scroll_body(rows, state.top, vh)
+        return body
 
     def _status():
         if state.is_add:

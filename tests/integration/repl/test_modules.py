@@ -7,7 +7,7 @@ import pytest
 
 import _libhbc
 import cli.repl as repl_mod
-from cli import cfg_dot, display
+from cli import cfg_dot, display, modules_view
 from cli.repl import HermitREPL
 from testutil import corpus_path, strip_ansi
 
@@ -32,7 +32,7 @@ def shown(monkeypatch):
 @pytest.fixture
 def graphs(monkeypatch):
     calls = []
-    monkeypatch.setattr(repl_mod.cfg_dot, "show_module_graph",
+    monkeypatch.setattr(cfg_dot, "show_module_graph",
                         lambda mod, mods, funcs, entries, **kw:
                         calls.append((mod.module_id, kw)))
     return calls
@@ -50,8 +50,8 @@ def _repl(name):
 def test_module_rows_hermitvault():
     f = _open("hermitvault.hbc")
     mods, funcs = f.recover_modules(), f.functions()
-    counts = display.module_function_counts(f.call_graph(), mods)
-    rows = [strip_ansi(r) for r in display.modules_to_ansi_rows(mods, funcs, [106, 0], counts)]
+    counts = modules_view.module_function_counts(f.call_graph(), mods)
+    rows = [strip_ansi(r) for r in modules_view.modules_to_ansi_rows(mods, funcs, [106, 0], counts)]
     assert len(rows) == 534
     assert rows[0].startswith("#0 ")
     assert "entry" in rows[0] and "deps   4 [1, 2, 513, 533]" in rows[0]
@@ -67,10 +67,10 @@ def test_module_rows_hermitvault():
 def test_module_function_counts_cover_every_module_function():
     f = _open("hermitvault.hbc")
     cg, mods = f.call_graph(), f.recover_modules()
-    counts = display.module_function_counts(cg, mods)
+    counts = modules_view.module_function_counts(cg, mods)
     assert set(counts) == {m.module_id for m in mods}
     for m in mods[:50]:
-        assert counts[m.module_id] == len(display.module_functions(cg, m))
+        assert counts[m.module_id] == len(modules_view.module_functions(cg, m))
 
 
 def test_callers_are_the_reverse_of_callees():
@@ -78,12 +78,12 @@ def test_callers_are_the_reverse_of_callees():
     mods = f.recover_modules()
     by_id = {m.module_id: m for m in mods}
     for m in mods:
-        for caller, idx in display.module_callers(m, mods):
+        for caller, idx in modules_view.module_callers(m, mods):
             for i in idx:
                 assert caller.dependencies[i] == m.module_id
     edges = {(m.module_id, d) for m in mods for d in m.dependencies if d is not None}
     reverse = {(c.module_id, m.module_id) for m in mods
-               for c, _ in display.module_callers(m, mods)}
+               for c, _ in modules_view.module_callers(m, mods)}
     assert reverse == edges
     assert all(d in by_id for _, d in edges)
 
@@ -91,19 +91,19 @@ def test_callers_are_the_reverse_of_callees():
 def test_module_callers_and_callees_rows():
     f = _open("hermitvault.hbc")
     mods, funcs = f.recover_modules(), f.functions()
-    callees = [strip_ansi(r) for r in display.module_callees_rows(_module(mods, 0), mods, funcs)]
+    callees = [strip_ansi(r) for r in modules_view.module_callees_rows(_module(mods, 0), mods, funcs)]
     assert len(callees) == 4
     assert callees[3].startswith("dependencyMap[3]  #533")
-    callers = [strip_ansi(r) for r in display.module_callers_rows(_module(mods, 107), mods, funcs)]
+    callers = [strip_ansi(r) for r in modules_view.module_callers_rows(_module(mods, 107), mods, funcs)]
     assert any(r.startswith("#106 ") and r.endswith("as dependencyMap[0]") for r in callers)
-    assert display.module_callers_rows(_module(mods, 0), mods, funcs) == []
+    assert modules_view.module_callers_rows(_module(mods, 0), mods, funcs) == []
 
 
 def test_module_detail_rows():
     f = _open("hermitvault.hbc")
     mods, funcs = f.recover_modules(), f.functions()
     rows = [strip_ansi(r) for r in
-            display.module_detail_rows(_module(mods, 0), mods, funcs, [106, 0], 12)]
+            modules_view.module_detail_rows(_module(mods, 0), mods, funcs, [106, 0], 12)]
     text = "\n".join(rows)
     assert rows[0] == "module #0  entry (__r)"
     assert "functions  12" in text
@@ -118,11 +118,11 @@ def test_null_dependency_is_shown_as_optional():
         dependencies, dependencies_known = [5, None], True
     class Func:
         name = "factory"
-    rows = [strip_ansi(r) for r in display.module_callees_rows(Mod, [Mod], [Func, Func])]
+    rows = [strip_ansi(r) for r in modules_view.module_callees_rows(Mod, [Mod], [Func, Func])]
     assert rows == ["dependencyMap[0]  #5  not defined in this bundle",
                     "dependencyMap[1]  null (optional dependency, unresolved)"]
     # a null entry includes no module, so it has no caller edge
-    assert display.module_callers(Mod, [Mod]) == []
+    assert modules_view.module_callers(Mod, [Mod]) == []
 
 
 # --- DOT ----------------------------------------------------------------------
@@ -214,7 +214,7 @@ def test_module_functions_partition_the_bundle():
     cg, mods = f.call_graph(), f.recover_modules()
     owner = {}
     for m in mods:
-        fns = display.module_functions(cg, m)
+        fns = modules_view.module_functions(cg, m)
         assert fns[0] <= m.function_index and m.function_index in fns
         for i in fns:
             assert i not in owner, f"func {i} in modules {owner.get(i)} and {m.module_id}"
@@ -230,14 +230,14 @@ def test_module_functions_single_function_module():
     no nested function."""
     f = _open("hermitvault.hbc")
     m = _module(f.recover_modules(), 106)
-    assert display.module_functions(f.call_graph(), m) == [m.function_index]
+    assert modules_view.module_functions(f.call_graph(), m) == [m.function_index]
 
 
 @pytest.mark.parametrize("line", ["functions --module=2", "functions --module 2"])
 def test_functions_module_flag(shown, line):
     r = _repl("metro_module.hbc")
     m = _module(r.project.hbc.recover_modules(), 2)
-    expected = display.module_functions(r.project.hbc.call_graph(), m)
+    expected = modules_view.module_functions(r.project.hbc.call_graph(), m)
     r._dispatch(line)
     (title, rows), = shown
     assert f"functions ({len(expected)})  module #2" in title
@@ -288,17 +288,17 @@ def test_xrefs_module_on_non_metro_file():
 def test_function_rows_tag_module_functions():
     f = _open("hermitvault.hbc")
     mods, funcs, cg = f.recover_modules(), f.functions(), f.call_graph()
-    fm = display.function_modules(cg, mods)
+    fm = modules_view.function_modules(cg, mods)
     rows = [strip_ansi(r) for r in display.functions_to_ansi_rows(
         funcs, f.header().global_code_index, fm)]
     m0 = _module(mods, 0)
-    members = display.module_functions(cg, m0)
+    members = modules_view.module_functions(cg, m0)
     assert rows[m0.function_index].endswith("# module 0 entry")
     nested = [i for i in members if i != m0.function_index]
     assert nested and all(rows[i].endswith("# module 0") for i in nested)
     # global function and prelude: no tag
     assert "# module" not in rows[f.header().global_code_index]
-    assert len(fm) == sum(len(display.module_functions(cg, m)) for m in mods)
+    assert len(fm) == sum(len(modules_view.module_functions(cg, m)) for m in mods)
 
 
 def test_functions_command_tags(shown):
@@ -320,7 +320,7 @@ def test_disasm_module_shows_every_function_in_sequence(monkeypatch):
     r = _repl("hermitvault.hbc")
     hbc = r.project.hbc
     m = _module(hbc.recover_modules(), 0)
-    expected = display.module_functions(hbc.call_graph(), m)
+    expected = modules_view.module_functions(hbc.call_graph(), m)
     r._dispatch("disasm module:0")
     (title, rows, alt_rows, alt_title, full_screen), = calls
     assert full_screen
@@ -379,7 +379,7 @@ def test_decompile_module_shows_every_function(viewer_calls):
     r = _repl("hermitvault.hbc")
     hbc = r.project.hbc
     m = _module(hbc.recover_modules(), 0)
-    expected = display.module_functions(hbc.call_graph(), m)
+    expected = modules_view.module_functions(hbc.call_graph(), m)
     r._dispatch("decompile module:0")
     (title, rows, full_screen), = viewer_calls
     assert full_screen
@@ -416,10 +416,10 @@ def test_decompile_module_errors():
 
 def test_module_exports_rows():
     f = _open("hermitvault.hbc")
-    rows = [strip_ansi(r) for r in display.module_exports_rows(f.module_exports(533))]
+    rows = [strip_ansi(r) for r in modules_view.module_exports_rows(f.module_exports(533))]
     assert rows[0] == "exports (2)  module.exports = {...}"
     assert rows[1:] == ['  displayName  = "HermitDemo"', '  name         = "HermitDemo"']
-    rows = [strip_ansi(r) for r in display.module_exports_rows(f.module_exports(60))]
+    rows = [strip_ansi(r) for r in modules_view.module_exports_rows(f.module_exports(60))]
     assert "ES module" in rows[0] and "export *" in rows[0]
     assert rows[1].endswith("(get)")
 

@@ -11,6 +11,7 @@ from prompt_toolkit.input.defaults import create_pipe_input
 from prompt_toolkit.output import DummyOutput
 
 import cli.repl as repl_mod
+from cli import cfg_dot
 from cli.repl import HermitREPL
 from testutil import corpus_path
 
@@ -39,7 +40,7 @@ def _stub_show_cfg(monkeypatch):
     """cfg_dot.show_cfg spawns `less`/`graph-easy` (external subprocesses, not
     reliable in headless CI) - just records the call."""
     calls = []
-    monkeypatch.setattr(repl_mod.cfg_dot, "show_cfg",
+    monkeypatch.setattr(cfg_dot, "show_cfg",
                         lambda cfg, func, **kw: calls.append((func.index, kw)))
     return calls
 

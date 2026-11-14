@@ -10,7 +10,6 @@ the last pair can be added or removed.
 from __future__ import annotations
 
 from prompt_toolkit.filters import Condition
-from prompt_toolkit.formatted_text import ANSI
 from prompt_toolkit.key_binding import KeyBindings
 
 from _libhbc import StringKind
@@ -18,7 +17,8 @@ from _libhbc import StringKind
 from cli import display
 from cli.editor.common import (
     CURSOR_STYLE, ERR_STYLE, HINT_STYLE, TextBufferMixin, apply_discard_cancel_bar,
-    bind_abort, bind_exit_prompt, bind_text_input, input_bar, run_screen, view_height,
+    bind_abort, bind_exit_prompt, bind_text_input, follow_cursor, input_bar, run_screen,
+    scroll_body, view_height,
 )
 from cli.literals import (
     SLPError, SLPTag, SLPValue, decode_value_bytes, encode_slp_value, slp_render,
@@ -117,11 +117,7 @@ class ArrayEditState(TextBufferMixin):
             self.sel = max(0, min(len(self.values) - 1, self.sel + delta))
 
     def ensure_visible(self, view_height: int, header_rows: int):
-        row = header_rows + self.sel
-        if row < self.top:
-            self.top = row
-        elif row >= self.top + view_height:
-            self.top = row - view_height + 1
+        self.top = follow_cursor(self.top, header_rows + self.sel, view_height)
         self.top = max(0, min(self.top, self._max_top))
 
     def begin_edit(self):
@@ -391,7 +387,8 @@ def run_array_editor(site_idx=0, site=None, values=(), keys=None, strings=(),
         rows = _body_rows()
         state._max_top = max(0, len(rows) - vh)
         state.ensure_visible(vh, _HEADER_ROWS)
-        return ANSI("\n".join(rows[state.top:state.top + vh]))
+        body, state.top, state._max_top = scroll_body(rows, state.top, vh)
+        return body
 
     def _status():
         v = state.cur_value()

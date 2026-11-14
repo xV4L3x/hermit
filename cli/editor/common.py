@@ -11,6 +11,7 @@ from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.layout import Layout
 from prompt_toolkit.layout.containers import HSplit, Window
 from prompt_toolkit.layout.controls import FormattedTextControl
+from prompt_toolkit.formatted_text import ANSI
 
 GUTTER_STYLE = "fg:ansibrightblack"
 MNEMONIC_STYLE = "bold fg:ansiyellow"
@@ -38,6 +39,24 @@ def strip_kind_suffix(s: str) -> str:
 
 def view_height() -> int:
     return max(3, shutil.get_terminal_size().lines - 4)
+
+
+def follow_cursor(top: int, cursor_row: int, view: int) -> int:
+    """New scroll `top` so that `cursor_row` stays inside the `view`-high window."""
+    if cursor_row < top:
+        return cursor_row
+    if cursor_row >= top + view:
+        return cursor_row - view + 1
+    return top
+
+
+def scroll_body(rows: list[str], top: int, view: int):
+    """Body of the editors' scrollable pane: clamps `top` to the content and
+    renders the visible slice. Returns (ANSI body, clamped top, max top) so the
+    caller can store the clamp back on its state."""
+    max_top = max(0, len(rows) - view)
+    top = max(0, min(top, max_top))
+    return ANSI("\n".join(rows[top:top + view])), top, max_top
 
 
 class TextBufferMixin:
