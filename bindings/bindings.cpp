@@ -319,7 +319,18 @@ PYBIND11_MODULE(_libhbc, m) {
         .def("functions",          &hbc::HBCFile::functions)
         .def("disasm",             &hbc::HBCFile::disasm)
         .def("cfg",                &hbc::HBCFile::cfg)
-        .def("string_xrefs",       &hbc::HBCFile::string_xrefs)
+        .def("string_xrefs",
+             [](const hbc::HBCFile& self, std::optional<uint32_t> stringIndex) -> py::object {
+                 if (!stringIndex) return py::cast(self.string_xrefs());
+                 const hbc::StringXRef* x = self.string_xref(*stringIndex);
+                 return x ? py::cast(*x) : py::none();
+             },
+             py::arg("string_index") = py::none(),
+             "Without string_index: every referenced string and its use sites "
+             "(StringID operands + array/object literal elements), in index order. "
+             "With string_index=N: just that string's StringXRef, or None if it is "
+             "never referenced. Both share one memoized computation, so the indexed "
+             "form is an O(1) lookup after the first call.")
         .def("call_graph",         &hbc::HBCFile::call_graph)
         .def("recover_modules",    &hbc::HBCFile::recover_modules)
         .def("metro_entry_modules", &hbc::HBCFile::metro_entry_modules)
@@ -330,6 +341,16 @@ PYBIND11_MODULE(_libhbc, m) {
         .def("value_flow",          &hbc::HBCFile::value_flow, py::arg("function_index"))
         .def("env_slot_value",      &hbc::HBCFile::env_slot_value, py::arg("env"), py::arg("slot"))
         .def("function_module",     &hbc::HBCFile::function_module, py::arg("function_index"))
+        .def("function_modules",
+             [](const hbc::HBCFile& self) {
+                 py::list out;
+                 for (int64_t g : self.function_modules())
+                     out.append(g < 0 ? py::none() : py::cast(static_cast<uint32_t>(g)));
+                 return out;
+             },
+             "The module id of every function at once, index-aligned to "
+             "functions() (None for a function outside every module). One call "
+             "instead of function_module() per function.")
         .def("module_exports",      &hbc::HBCFile::module_exports, py::arg("module_id"))
         .def("resolve_value",       &hbc::HBCFile::resolve_value, py::arg("value"))
         .def("resolved_calls",      &hbc::HBCFile::resolved_calls, py::arg("function_index"))

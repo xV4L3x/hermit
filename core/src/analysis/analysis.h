@@ -14,6 +14,7 @@
 namespace hbc {
 
 std::vector<CallSite>    computeCallGraph(const HBCFile& self);
+std::vector<StringXRef>  computeStringXrefs(const HBCFile& self);
 struct MetroModules {
     std::vector<MetroModule> modules;  // one per __d call, in global-function order
     std::vector<uint32_t>   entries;  // __r arguments, in call order

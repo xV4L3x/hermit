@@ -448,6 +448,10 @@ class HBCFile:
         ...
     def function_module(self, function_index: int) -> int | None:
         ...
+    def function_modules(self) -> list[int | None]:
+        """
+        The module id of every function at once, index-aligned to functions() (None for a function outside every module). One call instead of function_module() per function.
+        """
     def functions(self) -> list[FunctionInfo]:
         ...
     def header(self) -> HBCFileHeader:
@@ -486,8 +490,10 @@ class HBCFile:
         ...
     def string_kinds(self) -> list[StringKind]:
         ...
-    def string_xrefs(self) -> list[StringXRef]:
-        ...
+    def string_xrefs(self, string_index: int | None = None) -> list[StringXRef] | StringXRef | None:
+        """
+        Without string_index: every referenced string and its use sites (StringID operands + array/object literal elements), in index order. With string_index=N: just that string's StringXRef, or None if it is never referenced. Both share one memoized computation, so the indexed form is an O(1) lookup after the first call.
+        """
     def strings(self) -> list[str]:
         ...
     def textified_callees(self, arg0: int) -> list[TextifiedCallee]:

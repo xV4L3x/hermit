@@ -99,20 +99,20 @@ class XrefsCommand:
             self.console.print("Usage: xrefs [string:<value|N>] [func:<N|name>|module:<id> [--callees]]")
             return
 
-        all_xrefs = proj.hbc.string_xrefs()
         if spec.isdigit():
             target = int(spec)
-            xrefs  = [x for x in all_xrefs if x.string_index == target]
-            if not xrefs:
+            one = proj.hbc.string_xrefs(string_index=target)
+            if one is None:
                 strs = proj.hbc.strings()
                 if target < len(strs):
                     self.console.print(f"  [dim]string [{target}] {strs[target]!r} - no references[/]")
                 else:
                     self.console.print(f"[red]String index {target} out of range (0–{len(strs)-1})[/]")
                 return
+            xrefs = [one]
             title = f"xrefs  string:{target}  {sum(len(x.sites) for x in xrefs)} sites"
         else:
-            xrefs = [x for x in all_xrefs if x.string_value == spec]
+            xrefs = [x for x in proj.hbc.string_xrefs() if x.string_value == spec]
             if not xrefs:
                 self.console.print(f"  [dim]No references to string {spec!r}[/]")
                 return

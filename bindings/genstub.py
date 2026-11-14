@@ -40,6 +40,7 @@ RETURNS = {
     "env_slot_value": "AbstractValue | None",
     "environments": "list[EnvironmentInfo]",
     "function_callers": "list[CallerSite]",
+    "function_modules": "list[int | None]",
     "functions": "list[FunctionInfo]",
     "module_exports": "ModuleExports",
     "recover_modules": "list[MetroModule]",
@@ -49,7 +50,7 @@ RETURNS = {
     "source_files": "list[str]",
     "source_locations": "list[SourceLocation]",
     "strings": "list[str]",
-    "string_xrefs": "list[StringXRef]",
+    "string_xrefs": "list[StringXRef] | StringXRef | None",
     "textified_callees": "list[TextifiedCallee]",
     "value_flow": "list[InstrValues]",
 }

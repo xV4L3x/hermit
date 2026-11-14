@@ -19,6 +19,9 @@ Status legend: **[done]** shipped · **[wip]** partially implemented · **[plann
   index (`B42`) — first call builds it once, later calls are map lookups.
   `build_caller_index(progress)` pays that build up front with a progress
   callback; the REPL's `xrefs ... callers` shows a determinate bar during it.
+- **[done]** Indexed/bulk analysis accessors (`B45`): `string_xrefs(string_index=N)`
+  (memoized per-string lookup) and `function_modules()` (whole function-to-module
+  map in one call).
 - **[done]** Python API reference (`B44`): `doc/python-api.md` (methods, return
   shapes, recipes) and a generated `_libhbc.pyi` type stub (`bindings/genstub.py`),
   copied next to the built module for editor autocomplete.

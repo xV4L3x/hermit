@@ -55,6 +55,7 @@ Function and module identifiers are indices: `func_N` is `functions()[N]`,
 | `recover_modules()` | `list[MetroModule]` | reconstructed `__d(...)` modules + dependency map |
 | `metro_entry_modules()` | `list[int]` | module ids run at startup |
 | `function_module(func_index)` | `int \| None` | the module a function belongs to (`None` if outside any) |
+| `function_modules()` | `list[int \| None]` | the module of every function at once, index-aligned to `functions()` |
 | `module_exports(module_id)` | `ModuleExports` | the module's exported names and values |
 
 ### Value analysis
@@ -78,6 +79,7 @@ Function and module identifiers are indices: `func_N` is `functions()[N]`,
 |---|---|---|
 | `call_graph()` | `list[CallSite]` | direct (static) call edges |
 | `string_xrefs()` | `list[StringXRef]` | each referenced string and its use sites (operands + literal elements) |
+| `string_xrefs(string_index=N)` | `StringXRef \| None` | just that string's sites (`None` if unreferenced); O(1) after the first call |
 
 ## Return shapes
 

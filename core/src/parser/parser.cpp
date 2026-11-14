@@ -61,6 +61,8 @@ struct HBCFile::Impl {
     // Reverse call index: callee function index -> its callers. Built once over
     // the whole file (forces every function's resolved_calls), then O(1) lookups.
     mutable std::optional<std::map<uint32_t, std::vector<CallerSite>>> callerIndex;
+    mutable std::optional<std::vector<StringXRef>> stringXrefs;
+    mutable std::vector<int32_t> stringXrefPos;  // string index -> position in stringXrefs, -1 if none
     mutable std::map<uint32_t, std::vector<Instruction>> disasmCache;     // per function
     mutable std::map<uint32_t, CFGData>                  cfgCache;        // per function
     mutable std::optional<std::vector<CJSModuleInfo>> cjsModules;
@@ -199,6 +201,25 @@ const std::vector<CallSite>& HBCFile::call_graph() const {
     return *impl_->callGraph;
 }
 
+const std::vector<StringXRef>& HBCFile::string_xrefs() const {
+    if (!impl_->stringXrefs) {
+        impl_->stringXrefs = computeStringXrefs(*this);
+        impl_->stringXrefPos.assign(strings().size(), -1);
+        const auto& xrefs = *impl_->stringXrefs;
+        for (uint32_t i = 0; i < xrefs.size(); ++i)
+            if (xrefs[i].stringIndex < impl_->stringXrefPos.size())
+                impl_->stringXrefPos[xrefs[i].stringIndex] = static_cast<int32_t>(i);
+    }
+    return *impl_->stringXrefs;
+}
+
+const StringXRef* HBCFile::string_xref(uint32_t stringIndex) const {
+    const auto& xrefs = string_xrefs();  // builds the memo + index
+    if (stringIndex >= impl_->stringXrefPos.size()) return nullptr;
+    const int32_t pos = impl_->stringXrefPos[stringIndex];
+    return pos < 0 ? nullptr : &xrefs[pos];
+}
+
 const std::vector<MetroModule>& HBCFile::recover_modules() const {
     if (!impl_->modules)
         impl_->modules = computeModules(*this);
@@ -267,6 +288,11 @@ std::optional<uint32_t> HBCFile::function_module(uint32_t functionIndex) const {
     if (!impl_->functionGroups) impl_->functionGroups = computeFunctionGroups(*this);
     const int64_t g = (*impl_->functionGroups)[functionIndex];
     return g < 0 ? std::nullopt : std::optional<uint32_t>(static_cast<uint32_t>(g));
+}
+
+const std::vector<int64_t>& HBCFile::function_modules() const {
+    if (!impl_->functionGroups) impl_->functionGroups = computeFunctionGroups(*this);
+    return *impl_->functionGroups;
 }
 
 std::vector<InstrValues> HBCFile::value_flow(uint32_t functionIndex) const {

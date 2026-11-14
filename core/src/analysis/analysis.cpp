@@ -88,8 +88,8 @@ std::vector<LiteralStringHit> stringsInLiteral(
 // the array/object literal buffers a New*WithBuffer instruction points at.
 // Grouped by string; only strings with at least one reference are returned, in
 // index order. Within a string, sites follow the instruction order.
-std::vector<StringXRef> HBCFile::string_xrefs() const {
-    const auto& strs = strings();
+std::vector<StringXRef> computeStringXrefs(const HBCFile& self) {
+    const auto& strs = self.strings();
     std::vector<std::vector<XRefSite>> sitesByString(strs.size());
 
     // Sites commonly share a buffer segment (identical literals in several
@@ -112,7 +112,7 @@ std::vector<StringXRef> HBCFile::string_xrefs() const {
                  kind, h.firstElement, h.elementCount});
     };
 
-    forEachInstruction(*this, [&](const FunctionInfo& func, const Instruction& instr) {
+    forEachInstruction(self, [&](const FunctionInfo& func, const Instruction& instr) {
         for (const auto& op : instr.operands)
             if (op.type == Operand::Type::StringID && op.u32 < strs.size())
                 sitesByString[op.u32].push_back({func.index, instr.offset, instr.mnemonic});
@@ -121,12 +121,12 @@ std::vector<StringXRef> HBCFile::string_xrefs() const {
         if (!literalSiteFrom(func, instr, lit)) return;
         if (lit.isObject) {
             addLiteralSites(lit, XRefKind::ObjectKey,
-                            hitsOf(obj_key_buffer(), lit.keyBufferIdx, lit.count));
+                            hitsOf(self.obj_key_buffer(), lit.keyBufferIdx, lit.count));
             addLiteralSites(lit, XRefKind::ObjectValue,
-                            hitsOf(obj_value_buffer(), lit.bufferIdx, lit.count));
+                            hitsOf(self.obj_value_buffer(), lit.bufferIdx, lit.count));
         } else {
             addLiteralSites(lit, XRefKind::ArrayElement,
-                            hitsOf(array_buffer(), lit.bufferIdx, lit.count));
+                            hitsOf(self.array_buffer(), lit.bufferIdx, lit.count));
         }
     });
 

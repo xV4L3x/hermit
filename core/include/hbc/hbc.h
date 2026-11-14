@@ -515,7 +515,11 @@ public:
     uint32_t                         obj_value_buffer_offset()      const;
     const std::vector<Instruction>&  disasm(uint32_t functionIndex) const;
     const CFGData&                   cfg(uint32_t functionIndex)    const;
-    std::vector<StringXRef>          string_xrefs()                 const;
+    // Every referenced string and its use sites, in string-index order (built
+    // once, memoized). string_xref(): the entry for one string, or nullptr if
+    // that string has no reference. Both share the same computation.
+    const std::vector<StringXRef>&   string_xrefs()                 const;
+    const StringXRef*                string_xref(uint32_t stringIndex) const;
     const std::vector<CallSite>&     call_graph()                   const;
     const std::vector<MetroModule>&   recover_modules()              const;
     // Metro entry points: the module ids passed to `__r(id)` in the global
@@ -541,6 +545,10 @@ public:
     std::vector<InstrValues>         value_flow(uint32_t functionIndex) const;
     std::optional<AbstractValue>     env_slot_value(const EnvKey& env, uint32_t slot) const;
     std::optional<uint32_t>          function_module(uint32_t functionIndex) const;
+    // The module of every function at once (index-aligned to functions()): the
+    // module id, or -1 for a function outside every module. One call instead of
+    // function_module() per function.
+    const std::vector<int64_t>&      function_modules()             const;
     // The exports of a Metro module (empty if `moduleId` is not a module).
     ModuleExports                    module_exports(uint32_t moduleId) const;
     // `v` followed through module exports: module_M.x -> the value of export x
