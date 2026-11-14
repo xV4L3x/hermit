@@ -19,6 +19,10 @@ Status legend: **[done]** shipped · **[wip]** partially implemented · **[plann
   index (`B42`) — first call builds it once, later calls are map lookups.
   `build_caller_index(progress)` pays that build up front with a progress
   callback; the REPL's `xrefs ... callers` shows a determinate bar during it.
+- **[done]** Python API ergonomics (`B43`): `AbstractValue.func_index` /
+  `ModuleExport.function_index` to get a function index without parsing repr, and
+  `__repr__` on the bound analysis objects (CallSite, CallerSite, ResolvedCall,
+  StringXRef, XRefSite, MetroModule, ModuleExport).
 
 ## Parser & format
 

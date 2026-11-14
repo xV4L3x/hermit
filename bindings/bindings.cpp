@@ -3,6 +3,7 @@
 #include "hbc/hbc.h"
 #include "hbc/module.h"
 #include <limits>
+#include <cstdio>
 
 namespace py = pybind11;
 
@@ -10,6 +11,17 @@ namespace {
 
 py::bytes toBytes(const std::vector<uint8_t>& b) {
     return py::bytes(reinterpret_cast<const char*>(b.data()), b.size());
+}
+
+// "0x" + lowercase hex, for __repr__ of byte offsets.
+std::string hex(uint32_t v) {
+    char buf[11];
+    std::snprintf(buf, sizeof(buf), "0x%x", v);
+    return buf;
+}
+
+const char* viaName(hbc::ResolvedCall::Via via) {
+    return via == hbc::ResolvedCall::Via::Export ? "export" : "closure";
 }
 
 py::bytes toBytes(const std::string& s) {
@@ -441,6 +453,10 @@ PYBIND11_MODULE(_libhbc, m) {
         .def_readonly("kind",                &hbc::XRefSite::kind)
         .def_readonly("element_index",       &hbc::XRefSite::elementIndex)
         .def_readonly("element_count",       &hbc::XRefSite::elementCount)
+        .def("__repr__", [](const hbc::XRefSite& s) {
+            return "<XRefSite " + s.mnemonic + " func_" + std::to_string(s.functionIndex) +
+                   " @" + hex(s.instructionOffset) + ">";
+        })
     ;
 
     py::class_<hbc::StringXRef>(m, "StringXRef")
@@ -449,6 +465,10 @@ PYBIND11_MODULE(_libhbc, m) {
             return decodeUtf8(x.stringValue);
         })
         .def_readonly("sites", &hbc::StringXRef::sites)
+        .def("__repr__", [](const hbc::StringXRef& x) {
+            return py::str("<StringXRef #{} {!r} ({} sites)>").format(
+                x.stringIndex, decodeUtf8(x.stringValue), x.sites.size());
+        })
     ;
 
     // Call graph
@@ -460,6 +480,12 @@ PYBIND11_MODULE(_libhbc, m) {
         .def_readonly("mnemonic",     &hbc::CallSite::mnemonic)
         .def_property_readonly("is_resolved", [](const hbc::CallSite& cs) {
             return cs.calleeIndex != std::numeric_limits<uint32_t>::max();
+        })
+        .def("__repr__", [](const hbc::CallSite& cs) {
+            const bool resolved = cs.calleeIndex != std::numeric_limits<uint32_t>::max();
+            return "<CallSite " + cs.mnemonic + " func_" + std::to_string(cs.callerIndex) +
+                   " -> " + (resolved ? "func_" + std::to_string(cs.calleeIndex) : "unresolved") +
+                   " @" + hex(cs.offset) + (cs.isDirect ? " direct" : "") + ">";
         })
     ;
 
@@ -523,6 +549,11 @@ PYBIND11_MODULE(_libhbc, m) {
           if (!v.base) return std::nullopt;
           return *v.base;
       })
+      .def_property_readonly("func_index", [](const hbc::AbstractValue& v) -> std::optional<uint32_t> {
+          if (v.kind == hbc::AbstractValue::Kind::Closure) return v.index;
+          return std::nullopt;
+      }, "The function index when this value is a closure (kind == Kind.Closure), else None. "
+         "The plain way to turn a resolved value into a function index without parsing repr().")
       .def("__eq__",  [](const hbc::AbstractValue& a, const hbc::AbstractValue& b) { return a == b; })
       .def("__str__", [](const hbc::AbstractValue& v) { return decodeUtf8(v.toString()); })
       .def("__repr__", [](const hbc::AbstractValue& v) {
@@ -530,8 +561,22 @@ PYBIND11_MODULE(_libhbc, m) {
     ;
     py::class_<hbc::ModuleExport>(m, "ModuleExport")
         .def_property_readonly("name", [](const hbc::ModuleExport& e) { return decodeUtf8(e.name); })
-        .def_readonly("value",      &hbc::ModuleExport::value)
+        .def_readonly("value",      &hbc::ModuleExport::value,
+             "The exported value as an AbstractValue, or None if unknown. When it "
+             "is a closure, function_index is its function index (no index scan needed).")
+        .def_property_readonly("function_index", [](const hbc::ModuleExport& e) -> std::optional<uint32_t> {
+             if (e.value && e.value->kind == hbc::AbstractValue::Kind::Closure)
+                 return e.value->index;
+             return std::nullopt;
+         }, "The exported function's index when the export resolves to a closure, "
+            "else None. Shortcut for value.func_index.")
         .def_readonly("via_getter", &hbc::ModuleExport::viaGetter)
+        .def("__repr__", [](const hbc::ModuleExport& e) {
+            std::string r = "<ModuleExport " + static_cast<std::string>(decodeUtf8(e.name));
+            if (e.value) r += " = " + e.value->toString();
+            if (e.viaGetter) r += " (getter)";
+            return r + ">";
+        })
     ;
     py::class_<hbc::ModuleExports>(m, "ModuleExports")
         .def_readonly("reassigned",    &hbc::ModuleExports::reassigned)
@@ -550,12 +595,22 @@ PYBIND11_MODULE(_libhbc, m) {
          .def_readonly("via",          &hbc::ResolvedCall::via)
          .def_readonly("is_construct", &hbc::ResolvedCall::isConstruct)
          .def_readonly("callee_value", &hbc::ResolvedCall::calleeValue)
+         .def("__repr__", [](const hbc::ResolvedCall& rc) {
+             return "<ResolvedCall " + std::string(rc.isConstruct ? "new " : "") +
+                    "func_" + std::to_string(rc.callee) + " @" + hex(rc.offset) +
+                    " via " + viaName(rc.via) + ">";
+         })
     ;
     py::class_<hbc::CallerSite>(m, "CallerSite")
         .def_readonly("caller",       &hbc::CallerSite::caller)
         .def_readonly("offset",       &hbc::CallerSite::offset)
         .def_readonly("via",          &hbc::CallerSite::via)
         .def_readonly("is_construct", &hbc::CallerSite::isConstruct)
+        .def("__repr__", [](const hbc::CallerSite& c) {
+            return "<CallerSite " + std::string(c.isConstruct ? "new " : "") +
+                   "func_" + std::to_string(c.caller) + " @" + hex(c.offset) +
+                   " via " + viaName(c.via) + ">";
+        })
     ;
     py::class_<hbc::InstrValues>(m, "InstrValues")
         .def_readonly("offset",   &hbc::InstrValues::offset)
@@ -569,6 +624,12 @@ PYBIND11_MODULE(_libhbc, m) {
         .def_readonly("dependencies",   &hbc::MetroModule::dependencies)
         .def_readonly("dependencies_known", &hbc::MetroModule::dependenciesKnown)
         .def_readonly("define_offset",  &hbc::MetroModule::defineOffset)
+        .def("__repr__", [](const hbc::MetroModule& mod) {
+            return "<MetroModule #" + std::to_string(mod.moduleId) +
+                   " func_" + std::to_string(mod.functionIndex) +
+                   " (" + std::to_string(mod.dependencies.size()) + " deps" +
+                   (mod.dependenciesKnown ? "" : "?") + ")>";
+        })
     ;
 
     // CJS Module Table (native `hermes -commonjs` mode, never present in a

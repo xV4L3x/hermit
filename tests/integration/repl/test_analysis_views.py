@@ -196,3 +196,31 @@ def test_xrefs_func_command_uses_resolved_calls(shown):
     title, rows = shown[-1]
     assert title == "xrefs  func:86 (_interopRequireDefault)  callers"
     assert "func:83 (anonymous_func_83)  1 call  @ 0x002d" in _plain(rows)
+
+
+def test_export_function_index_and_reprs():
+    """The export value resolves to a function index directly, and bound
+    analysis objects have readable reprs (discoverability, not correctness)."""
+    f = _open("hermitvault.hbc")
+
+    # module 2 exports `unstable_batchedUpdates`, bound to a closure.
+    ex = next(n for n in f.module_exports(2).names if n.function_index is not None)
+    assert ex.function_index == ex.value.func_index
+    assert ex.value.kind == _libhbc.AbstractValue.Kind.Closure
+    assert ex.value.func_index == ex.value.index
+    assert repr(ex).startswith("<ModuleExport ")
+
+    # func_index is None for a value that is not a closure.
+    non_closure = next(
+        iv.result for iv in f.value_flow(83)
+        if iv.result is not None and iv.result.kind != _libhbc.AbstractValue.Kind.Closure
+    )
+    assert non_closure.func_index is None
+
+    callers = f.function_callers(86)
+    assert repr(callers[0]).startswith("<CallerSite ")
+    assert repr(f.call_graph()[0]).startswith("<CallSite ")
+    assert repr(f.recover_modules()[0]).startswith("<MetroModule #")
+    sx = f.string_xrefs()
+    assert repr(sx[0]).startswith("<StringXRef #")
+    assert repr(sx[0].sites[0]).startswith("<XRefSite ")
