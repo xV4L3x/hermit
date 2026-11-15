@@ -717,6 +717,11 @@ class HermitProject:
                 raise ValueError(f"array:{site_idx} already has the key \"{name}\"")
 
         h0 = self.hbc.header()
+        # v98 keeps object-literal values in the merged "literal value buffer"
+        # (array_buffer_size) and the key set/count in the object shape table
+        # (obj_value_buffer_size is the shape-entry count), so the header-growth
+        # and operand checks differ from the v94-96 inline layout.
+        is_v98 = self.hbc.version() >= 97
         old_val_buf = self.hbc.obj_value_buffer() if is_object else self.hbc.array_buffer()
         old_elems = _decode_site(old_val_buf, site0.buffer_idx, site0.count)
         old_keys = (_decode_site(self.hbc.obj_key_buffer(), site0.key_buffer_idx, site0.count)
@@ -730,11 +735,22 @@ class HermitProject:
         h1 = new_hbc.header()
         _check_file_length(h1, len(new_image))
 
-        val_field = "obj_value_buffer_size" if is_object else "array_buffer_size"
+        # The header word that holds the value-buffer byte size: the merged
+        # literal value buffer (array_buffer_size) for arrays and for v98 objects,
+        # the separate object value buffer for v94-96 objects.
+        val_field = "obj_value_buffer_size" if (is_object and not is_v98) else "array_buffer_size"
         exp_val = getattr(h0, val_field) + len(new_buffer_bytes)
         if getattr(h1, val_field) != exp_val:
             raise ValueError(f"{val_field} {getattr(h1, val_field)} ≠ {exp_val}")
-        if is_object:
+        if is_object and is_v98:
+            exp_key = h0.obj_key_buffer_size + len(new_key_buffer_bytes)
+            if h1.obj_key_buffer_size != exp_key:
+                raise ValueError(f"obj_key_buffer_size {h1.obj_key_buffer_size} ≠ {exp_key}")
+            # One shape entry is appended (obj_value_buffer_size is the shape count).
+            if h1.obj_value_buffer_size != h0.obj_value_buffer_size + 1:
+                raise ValueError(
+                    f"shape-table count {h1.obj_value_buffer_size} ≠ {h0.obj_value_buffer_size + 1}")
+        elif is_object:
             exp_key = h0.obj_key_buffer_size + len(new_key_buffer_bytes)
             if h1.obj_key_buffer_size != exp_key:
                 raise ValueError(f"obj_key_buffer_size {h1.obj_key_buffer_size} ≠ {exp_key}")
@@ -762,15 +778,19 @@ class HermitProject:
             raise ValueError(
                 f"expected keyBufferIdx {h0.obj_key_buffer_size}, found {site1.key_buffer_idx}")
 
-        # sizeHint == count must still hold (LiteralSite doesn't expose sizeHint,
-        # so re-disassemble the instruction).
-        instr = next((x for x in new_hbc.disasm(func_idx) if x.offset == instr_offset), None)
-        if instr is None or len(instr.operands) < 3:
-            raise ValueError("integrity: site instruction not found after the edit")
-        if instr.operands[1].u32 != expected_count or instr.operands[2].u32 != expected_count:
-            raise ValueError(
-                f"instruction sizeHint/count inconsistent with {expected_count} "
-                f"after resize_literal")
+        # v94-96 (and arrays on all versions) carry sizeHint == count inline, so
+        # re-disassemble and check them (LiteralSite doesn't expose sizeHint). v98
+        # object literals carry the count in the shape table instead (already
+        # checked via site1.count), and their operands are shapeTableIndex /
+        # valueBufferIdx, not sizeHint / count.
+        if not (is_object and is_v98):
+            instr = next((x for x in new_hbc.disasm(func_idx) if x.offset == instr_offset), None)
+            if instr is None or len(instr.operands) < 3:
+                raise ValueError("integrity: site instruction not found after the edit")
+            if instr.operands[1].u32 != expected_count or instr.operands[2].u32 != expected_count:
+                raise ValueError(
+                    f"instruction sizeHint/count inconsistent with {expected_count} "
+                    f"after resize_literal")
 
         _check_other_sites_unchanged(sites0, new_sites, site_idx, "resize")
 

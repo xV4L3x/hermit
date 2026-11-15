@@ -287,10 +287,20 @@ private:
         uint32_t    valueOffRel;
 
         bool        isObject;
-        uint32_t    keyOperandBytePos;        // objects only
+        uint32_t    keyOperandBytePos;        // objects only (v94-96)
         uint32_t    keyOperandWidth;
         std::string newKeyBufferBytes;
         uint32_t    keyOffRel;
+
+        // v98 object resize: the key set and count live in the object shape
+        // table, not in inline operands. Instead of rewriting count/sizeHint/key
+        // operands, a new shape entry is appended and the NewObjectWithBuffer
+        // shapeTableIndex operand is repointed to it.
+        bool        v98Shape = false;
+        uint32_t    shapeOperandBytePos = 0;  // NewObjectWithBuffer operand 1
+        uint32_t    shapeOperandWidth   = 0;
+        uint32_t    newShapeIndex       = 0;  // index of the appended shape entry
+        std::string newShapeEntryBytes;       // 8 bytes appended to "object shape table"
     };
     std::optional<PendingLiteralResize> pendingLiteralResize_;
 

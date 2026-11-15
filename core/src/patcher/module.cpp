@@ -617,11 +617,61 @@ void Module::resize_literal(uint32_t funcIdx, uint32_t instrOffset, bool isObjec
             "only one edit per serialize (two separate commits)");
 
     const FormatVersion* fmt = formatForVersion(version_);
-    if (isObject && fmt->objectLiteralUsesShapeTable())
-        throw std::runtime_error(
-            std::string(who) + ": object-literal resize is not supported on this version - "
-            "the key set and element count live in the object shape table, not in inline "
-            "operands");
+
+    // v98 object resize: the key set and element count live in the object shape
+    // table, not in inline operands. Append a new shape entry (new key-buffer
+    // offset + count) and a new value/key buffer, then repoint the
+    // NewObjectWithBuffer shapeTableIndex (operand 1) and valueBufferIdx
+    // (operand 2); existing shapes, keys and values are never touched.
+    if (isObject && fmt->objectLiteralUsesShapeTable()) {
+        const LiteralTarget t = locateLiteralSite(who, "adding/removing an element", funcIdx,
+                                                  instrOffset, isObject, 2);
+        const uint32_t curShapeIdx = t.instr.operands[1].u32;
+
+        const MidSection* shapeSec = nullptr;
+        for (const MidSection& ms : midSections_)
+            if (ms.name == "object shape table") { shapeSec = &ms; break; }
+        const size_t soff = static_cast<size_t>(curShapeIdx) * 8;
+        if (!shapeSec || soff + 8 > shapeSec->bytes.size())
+            throw std::runtime_error(std::string(who) + ": shape table entry " +
+                                     std::to_string(curShapeIdx) + " out of range");
+        uint32_t curNumProps = 0;
+        std::memcpy(&curNumProps, shapeSec->bytes.data() + soff + 4, 4);
+        if (!isAdd && curNumProps == 0)
+            throw std::out_of_range(std::string(who) + ": count is already 0, nothing to remove");
+        const uint32_t newCount = curNumProps + (isAdd ? 1u : 0u) - (isAdd ? 0u : 1u);
+
+        PendingLiteralResize pr;
+        pr.isObject            = true;
+        pr.v98Shape            = true;
+        pr.newCount            = newCount;
+        pr.valueMidSectionName = fmt->objValueBufferSection();  // "literal value buffer"
+        pr.valueOperandBytePos = t.operandBytePos[2];
+        pr.valueOperandWidth   = t.operandWidth[2];
+        pr.newBufferBytes      = newBufferBytes;
+        pr.valueOffRel         = newBufferOffset(who, pr.valueMidSectionName.c_str(), pr.valueOperandWidth);
+
+        pr.newKeyBufferBytes   = newKeyBufferBytes;
+        const uint32_t newKeyOff = newBufferOffset(who, "object key buffer", 4);
+
+        pr.shapeOperandBytePos = t.operandBytePos[1];
+        pr.shapeOperandWidth   = t.operandWidth[1];
+        const uint32_t newShapeIdx = static_cast<uint32_t>(shapeSec->bytes.size() / 8);
+        const uint64_t maxShape = pr.shapeOperandWidth >= 4
+            ? 0xFFFFFFFFull : ((1ull << (pr.shapeOperandWidth * 8)) - 1);
+        if (newShapeIdx > maxShape)
+            throw std::runtime_error(
+                std::string(who) + ": shapeTableIndex " + std::to_string(newShapeIdx) +
+                " doesn't fit the operand - would need the *Long variant (promotion not supported)");
+        pr.newShapeIndex = newShapeIdx;
+        pr.newShapeEntryBytes.resize(8);
+        std::memcpy(pr.newShapeEntryBytes.data(),     &newKeyOff,   4);
+        std::memcpy(pr.newShapeEntryBytes.data() + 4, &pr.newCount, 4);
+
+        pendingLiteralResize_ = std::move(pr);
+        return;
+    }
+
     const uint32_t valueIdx = isObject ? fmt->objectValueOperandIndex() : 3;
     const LiteralTarget t = locateLiteralSite(who, "adding/removing an element", funcIdx,
                                               instrOffset, isObject, valueIdx);
@@ -906,15 +956,25 @@ std::vector<uint8_t> Module::serialize() {
 
     if (pendingLiteralResize_) {
         const PendingLiteralResize& pr = *pendingLiteralResize_;
-        appendToMid(pr.valueMidSectionName, pr.newBufferBytes);
-        if (pr.isObject)
-            appendToMid("object key buffer", pr.newKeyBufferBytes);
+        if (pr.v98Shape) {
+            // v98 object resize: append the new value/key buffers and a new shape
+            // entry, then repoint the valueBufferIdx and shapeTableIndex operands.
+            appendToMid(pr.valueMidSectionName, pr.newBufferBytes);
+            appendToMid("object key buffer",   pr.newKeyBufferBytes);
+            appendToMid("object shape table",  pr.newShapeEntryBytes);
+            std::memcpy(newBlob.data() + pr.valueOperandBytePos, &pr.valueOffRel,   pr.valueOperandWidth);
+            std::memcpy(newBlob.data() + pr.shapeOperandBytePos, &pr.newShapeIndex, pr.shapeOperandWidth);
+        } else {
+            appendToMid(pr.valueMidSectionName, pr.newBufferBytes);
+            if (pr.isObject)
+                appendToMid("object key buffer", pr.newKeyBufferBytes);
 
-        std::memcpy(newBlob.data() + pr.countOperandBytePos,    &pr.newCount, 2);
-        std::memcpy(newBlob.data() + pr.sizeHintOperandBytePos, &pr.newCount, 2);
-        std::memcpy(newBlob.data() + pr.valueOperandBytePos, &pr.valueOffRel, pr.valueOperandWidth);
-        if (pr.isObject)
-            std::memcpy(newBlob.data() + pr.keyOperandBytePos, &pr.keyOffRel, pr.keyOperandWidth);
+            std::memcpy(newBlob.data() + pr.countOperandBytePos,    &pr.newCount, 2);
+            std::memcpy(newBlob.data() + pr.sizeHintOperandBytePos, &pr.newCount, 2);
+            std::memcpy(newBlob.data() + pr.valueOperandBytePos, &pr.valueOffRel, pr.valueOperandWidth);
+            if (pr.isObject)
+                std::memcpy(newBlob.data() + pr.keyOperandBytePos, &pr.keyOffRel, pr.keyOperandWidth);
+        }
     }
 
     // 4. Re-layout: kind table, id hash, string table, overflow table, string

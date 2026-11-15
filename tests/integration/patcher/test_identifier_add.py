@@ -40,7 +40,7 @@ def _compiler(version):
 VERSIONS = [
     pytest.param(v, marks=pytest.mark.skipif(_compiler(v) is None,
                                              reason=f"no hermes for HBC {v}"))
-    for v in (94, 95, 96)
+    for v in (94, 95, 96, 98)
 ]
 
 
@@ -67,11 +67,13 @@ def _recomputed(f, data):
 
 def _put_delta_site(f):
     """Absolute file position of the string operand of `PutById ..., "delta"` in main
-    (UInt16, last two bytes of the instruction)."""
+    (UInt16, last two bytes of the instruction). v98 split PutById into
+    PutByIdLoose / PutByIdStrict, with the same operand layout."""
     main = next(fn for fn in f.functions() if fn.name == "main")
     delta = f.strings().index("delta")
+    put_byid = ("PutById", "PutByIdLoose", "PutByIdStrict")
     for ins in f.disasm(main.index):
-        if ins.mnemonic == "PutById" and ins.operands[3].u32 == delta:
+        if ins.mnemonic in put_byid and ins.operands[3].u32 == delta:
             return main.offset + ins.offset + 4
     raise AssertionError("PutById 'delta' not found")
 
