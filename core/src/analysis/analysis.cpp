@@ -26,11 +26,39 @@ void forEachInstruction(const HBCFile& f, Fn&& fn) {
 
 namespace {
 
-// New{Array,Object}WithBuffer[Long] operands (v94-96): dst, sizeHint, count,
-// then one buffer offset (array) or two (object: key buffer, value buffer).
-// An object's bufferIdx is the value buffer, the editable one. False for any
-// other instruction and for a truncated operand list.
-bool literalSiteFrom(const FunctionInfo& func, const Instruction& instr, LiteralSite& site) {
+// v98 object shape table entry: a shape index maps to the key buffer offset and
+// the property count (which v94-96 carried as NewObjectWithBuffer operands).
+struct ShapeEntry { uint32_t keyBufferOffset = 0; uint32_t numProps = 0; };
+
+// Parses the "object shape table" section. Empty for v94-96 (no shape table).
+std::vector<ShapeEntry> readShapeTable(const HBCFile& self) {
+    std::vector<ShapeEntry> out;
+    if (self.version() < 97) return out;
+    for (const auto& s : self.section_map()) {
+        if (s.name != std::string("object shape table")) continue;
+        const uint8_t* p = self.raw_data() + s.offset;
+        const uint32_t n = s.size / 8;
+        out.reserve(n);
+        for (uint32_t i = 0; i < n; ++i) {
+            ShapeEntry e;
+            std::memcpy(&e.keyBufferOffset, p + i * 8,     4);
+            std::memcpy(&e.numProps,        p + i * 8 + 4, 4);
+            out.push_back(e);
+        }
+        break;
+    }
+    return out;
+}
+
+// New{Array,Object}WithBuffer[Long] literal site.
+//   array (all versions):  dst, sizeHint, count, bufferOffset
+//   object v94-96:         dst, sizeHint, count, keyBufferIdx, valueBufferIdx
+//   object v98:            dst, shapeTableIndex, valueBufferIdx - the key buffer
+//     offset and the property count come from the shape table entry.
+// An object's bufferIdx is the value buffer (merged with the array buffer in
+// v98), the editable one. False for any other instruction or a truncated list.
+bool literalSiteFrom(const HBCFile& self, const std::vector<ShapeEntry>& shapes,
+                     const FunctionInfo& func, const Instruction& instr, LiteralSite& site) {
     const bool isArr = instr.mnemonic == "NewArrayWithBuffer" ||
                        instr.mnemonic == "NewArrayWithBufferLong";
     const bool isObj = instr.mnemonic == "NewObjectWithBuffer" ||
@@ -48,6 +76,13 @@ bool literalSiteFrom(const FunctionInfo& func, const Instruction& instr, Literal
         site.count        = instr.operands[2].u32;
         site.bufferIdx    = instr.operands[3].u32;
         site.keyBufferIdx = 0;
+    } else if (self.version() >= 97) {
+        if (instr.operands.size() < 3) return false;
+        const uint32_t shapeIdx = instr.operands[1].u32;
+        site.bufferIdx = instr.operands[2].u32;
+        if (shapeIdx >= shapes.size()) return false;
+        site.keyBufferIdx = shapes[shapeIdx].keyBufferOffset;
+        site.count        = shapes[shapeIdx].numProps;
     } else {
         if (instr.operands.size() < 5) return false;
         site.count        = instr.operands[2].u32;
@@ -112,13 +147,14 @@ std::vector<StringXRef> computeStringXrefs(const HBCFile& self) {
                  kind, h.firstElement, h.elementCount});
     };
 
+    const auto shapes = readShapeTable(self);
     forEachInstruction(self, [&](const FunctionInfo& func, const Instruction& instr) {
         for (const auto& op : instr.operands)
             if (op.type == Operand::Type::StringID && op.u32 < strs.size())
                 sitesByString[op.u32].push_back({func.index, instr.offset, instr.mnemonic});
 
         LiteralSite lit;
-        if (!literalSiteFrom(func, instr, lit)) return;
+        if (!literalSiteFrom(self, shapes, func, instr, lit)) return;
         if (lit.isObject) {
             addLiteralSites(lit, XRefKind::ObjectKey,
                             hitsOf(self.obj_key_buffer(), lit.keyBufferIdx, lit.count));
@@ -333,9 +369,10 @@ MetroModules computeModules(const HBCFile& self) {
 // New{Array,Object}WithBuffer[Long] sites (see literalSiteFrom).
 std::vector<LiteralSite> computeLiteralSites(const HBCFile& self) {
     std::vector<LiteralSite> result;
+    const auto shapes = readShapeTable(self);
     forEachInstruction(self, [&](const FunctionInfo& func, const Instruction& instr) {
         LiteralSite site;
-        if (literalSiteFrom(func, instr, site)) result.push_back(std::move(site));
+        if (literalSiteFrom(self, shapes, func, instr, site)) result.push_back(std::move(site));
     });
     return result;
 }

@@ -474,8 +474,10 @@ uint32_t offsetOfSection(const HBCFile& f, const char* name) {
 } // namespace
 
 const std::string& HBCFile::array_buffer() const {
+    // v98 merges the array and object-value buffers into one literal value buffer.
     if (!impl_->arrayBuffer)
-        impl_->arrayBuffer = sliceSectionByName(*this, "array buffer");
+        impl_->arrayBuffer = sliceSectionByName(
+            *this, version() >= 97 ? "literal value buffer" : "array buffer");
     return *impl_->arrayBuffer;
 }
 
@@ -486,8 +488,10 @@ const std::string& HBCFile::obj_key_buffer() const {
 }
 
 const std::string& HBCFile::obj_value_buffer() const {
+    // v98 stores object-literal values in the merged literal value buffer.
     if (!impl_->objValueBuffer)
-        impl_->objValueBuffer = sliceSectionByName(*this, "object value buffer");
+        impl_->objValueBuffer = sliceSectionByName(
+            *this, version() >= 97 ? "literal value buffer" : "object value buffer");
     return *impl_->objValueBuffer;
 }
 
