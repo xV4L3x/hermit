@@ -3,7 +3,7 @@ hermit HBC core library
 """
 from __future__ import annotations
 import typing
-__all__: list[str] = ['AbstractValue', 'BasicBlock', 'BigIntInfo', 'CFGData', 'CFGEdge', 'CJSModuleInfo', 'CallSite', 'CallerSite', 'DebugInfoHeader', 'EdgeKind', 'EnvAccess', 'EnvKey', 'EnvSlotUse', 'EnvironmentInfo', 'ExceptionHandlerInfo', 'FileTooSmallError', 'FunctionInfo', 'HBCFile', 'HBCFileHeader', 'InstrValues', 'Instruction', 'InvalidMagicError', 'InvalidStringEntryError', 'LiteralSite', 'MetroModule', 'Module', 'ModuleExport', 'ModuleExports', 'OpcodeDesc', 'Operand', 'OperandType', 'ResolvedCall', 'ScopeVariable', 'Section', 'SourceLocation', 'StringEntry', 'StringKind', 'StringVerdict', 'StringXRef', 'TextifiedCallee', 'UnsupportedVersionError', 'ValidationMode', 'XRefKind', 'XRefSite', 'assemble_function', 'encode_instruction', 'identifier_hash', 'opcode_table', 'operand_size']
+__all__: list[str] = ['AbstractValue', 'BasicBlock', 'BigIntInfo', 'CFGData', 'CFGEdge', 'CJSModuleInfo', 'CallSite', 'CallerSite', 'DebugInfoHeader', 'EdgeKind', 'EnvAccess', 'EnvKey', 'EnvSlotUse', 'EnvironmentInfo', 'ExceptionHandlerInfo', 'FileTooSmallError', 'FunctionInfo', 'HBCFile', 'HBCFileHeader', 'InstrValues', 'Instruction', 'InvalidMagicError', 'InvalidStringEntryError', 'LiteralSite', 'MetroModule', 'Module', 'ModuleExport', 'ModuleExports', 'OpcodeDesc', 'Operand', 'OperandType', 'ResolvedCall', 'ScopeVariable', 'Section', 'SourceLocation', 'StringEntry', 'StringKind', 'StringVerdict', 'StringXRef', 'TextifiedCallee', 'UnsupportedVersionError', 'ValidationMode', 'XRefKind', 'XRefSite', 'assemble_function', 'encode_instruction', 'identifier_hash', 'object_literal_uses_shape_table', 'opcode_table', 'operand_size']
 class StringKind:
     """
     Members:
@@ -1176,6 +1176,10 @@ def encode_instruction(version: int, opcode: int, operands: list[float]) -> byte
 def identifier_hash(data: bytes, is_utf16: bool = False) -> int:
     """
     Hermes's Identifier Hash Table hash of an encoded string (ASCII bytes, or UTF-16LE when is_utf16). ValueError on an odd UTF-16 length.
+    """
+def object_literal_uses_shape_table(version: int) -> bool:
+    """
+    True if object literals reference their keys/count through the object shape table (v98) rather than inline NewObjectWithBuffer operands (v94-96).
     """
 def opcode_table(arg0: int) -> list[OpcodeDesc]:
     """

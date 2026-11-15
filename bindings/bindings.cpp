@@ -2,8 +2,10 @@
 #include <pybind11/stl.h>
 #include "hbc/hbc.h"
 #include "hbc/module.h"
+#include "hbc/format_version.h"
 #include <limits>
 #include <cstdio>
+#include <stdexcept>
 
 namespace py = pybind11;
 
@@ -145,6 +147,17 @@ PYBIND11_MODULE(_libhbc, m) {
     ;
     m.def("opcode_table", &hbc::opcode_table,
           "Complete opcode table (list[OpcodeDesc]) for an HBC version");
+    m.def("object_literal_uses_shape_table",
+          [](uint32_t version) {
+              const hbc::FormatVersion* f = hbc::formatForVersion(version);
+              if (!f)
+                  throw std::invalid_argument("unsupported HBC version: " +
+                                              std::to_string(version));
+              return f->objectLiteralUsesShapeTable();
+          },
+          py::arg("version"),
+          "True if object literals reference their keys/count through the object "
+          "shape table (v98) rather than inline NewObjectWithBuffer operands (v94-96).");
     m.def("identifier_hash",
           [](const py::bytes& b, bool isUTF16) {
               const std::string s = b;

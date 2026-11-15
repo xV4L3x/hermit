@@ -717,11 +717,12 @@ class HermitProject:
                 raise ValueError(f"array:{site_idx} already has the key \"{name}\"")
 
         h0 = self.hbc.header()
-        # v98 keeps object-literal values in the merged "literal value buffer"
-        # (array_buffer_size) and the key set/count in the object shape table
-        # (obj_value_buffer_size is the shape-entry count), so the header-growth
-        # and operand checks differ from the v94-96 inline layout.
-        is_v98 = self.hbc.version() >= 97
+        # Formats that keep object-literal keys/count in the object shape table
+        # (v98) store the values in the merged "literal value buffer"
+        # (array_buffer_size) and grow the shape count, not the object value
+        # buffer, so the header-growth and operand checks differ from the inline
+        # (v94-96) layout. Ask the format, don't branch on the version number.
+        shape_keys = _libhbc.object_literal_uses_shape_table(self.hbc.version())
         old_val_buf = self.hbc.obj_value_buffer() if is_object else self.hbc.array_buffer()
         old_elems = _decode_site(old_val_buf, site0.buffer_idx, site0.count)
         old_keys = (_decode_site(self.hbc.obj_key_buffer(), site0.key_buffer_idx, site0.count)
@@ -738,11 +739,11 @@ class HermitProject:
         # The header word that holds the value-buffer byte size: the merged
         # literal value buffer (array_buffer_size) for arrays and for v98 objects,
         # the separate object value buffer for v94-96 objects.
-        val_field = "obj_value_buffer_size" if (is_object and not is_v98) else "array_buffer_size"
+        val_field = "obj_value_buffer_size" if (is_object and not shape_keys) else "array_buffer_size"
         exp_val = getattr(h0, val_field) + len(new_buffer_bytes)
         if getattr(h1, val_field) != exp_val:
             raise ValueError(f"{val_field} {getattr(h1, val_field)} ≠ {exp_val}")
-        if is_object and is_v98:
+        if is_object and shape_keys:
             exp_key = h0.obj_key_buffer_size + len(new_key_buffer_bytes)
             if h1.obj_key_buffer_size != exp_key:
                 raise ValueError(f"obj_key_buffer_size {h1.obj_key_buffer_size} ≠ {exp_key}")
@@ -778,12 +779,12 @@ class HermitProject:
             raise ValueError(
                 f"expected keyBufferIdx {h0.obj_key_buffer_size}, found {site1.key_buffer_idx}")
 
-        # v94-96 (and arrays on all versions) carry sizeHint == count inline, so
-        # re-disassemble and check them (LiteralSite doesn't expose sizeHint). v98
-        # object literals carry the count in the shape table instead (already
-        # checked via site1.count), and their operands are shapeTableIndex /
-        # valueBufferIdx, not sizeHint / count.
-        if not (is_object and is_v98):
+        # Inline-layout literals (arrays on all versions, and v94-96 objects)
+        # carry sizeHint == count in operands, so re-disassemble and check them
+        # (LiteralSite doesn't expose sizeHint). Shape-table objects carry the
+        # count in the shape table instead (already checked via site1.count), and
+        # their operands are shapeTableIndex / valueBufferIdx, not sizeHint/count.
+        if not (is_object and shape_keys):
             instr = next((x for x in new_hbc.disasm(func_idx) if x.offset == instr_offset), None)
             if instr is None or len(instr.operands) < 3:
                 raise ValueError("integrity: site instruction not found after the edit")
