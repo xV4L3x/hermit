@@ -11,7 +11,9 @@ namespace hbc {
 // Little-endian bytes on disk: C6 1F BC 03 C1 03 19 1F.
 constexpr uint64_t HBC_MAGIC = 0x1F1903C103BC1FC6ULL;
 
-constexpr std::array<uint32_t, 3> SUPPORTED_VERSIONS = {94, 95, 96};
+// v94/95/96 share this file's struct layout; v98 (Static Hermes, RN 0.84+) has
+// its own structs in format_v98.h and its own parser branches.
+constexpr std::array<uint32_t, 4> SUPPORTED_VERSIONS = {94, 95, 96, 98};
 
 // Header byte at offset 0x6C. Usage: BytecodeOptions{h.options}.bits.hasAsync
 // (bit order assumes GCC/Clang on little-endian).

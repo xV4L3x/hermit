@@ -14,11 +14,13 @@ namespace hbc {
 //
 // Function-info section layout:
 //   if hasExceptionHandler: uint32 count, then count x HBCExceptionHandlerInfo
-//   if hasDebugInfo:        3 x uint32 { debugOffset, scopeDescOffset, textifiedCalleesOffset }
+//   if hasDebugInfo (v94-96): 3 x uint32 { debugOffset, scopeDescOffset, textifiedCalleesOffset }
+//   if hasDebugInfo (v98):    2 x uint32 { sourceLocations, lexicalData }
 // Handler offsets are relative to the start of the function's bytecode.
 void parseExceptionHandlers(
     const uint8_t*             fileData,
     uint32_t                   fileSize,
+    uint32_t                   version,
     std::vector<FunctionInfo>& functions);
 
 } // namespace hbc

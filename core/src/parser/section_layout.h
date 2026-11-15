@@ -4,6 +4,7 @@
 #pragma once
 
 #include "hbc/format.h"
+#include "hbc/format_v98.h"  // smallFuncHeaderSize()
 
 #include <cstdint>
 #include <stdexcept>
@@ -29,7 +30,7 @@ struct StringSectionOffsets {
 
 inline StringSectionOffsets stringSectionOffsets(const HBCFileHeader& hdr) {
     StringSectionOffsets o;
-    o.kindTable = alignUp(sizeof(HBCFileHeader) + hdr.functionCount * sizeof(SmallFuncHeader), 4);
+    o.kindTable = alignUp(sizeof(HBCFileHeader) + hdr.functionCount * smallFuncHeaderSize(hdr.version), 4);
     o.identifierHashes = alignUp(o.kindTable + hdr.stringKindCount * 4, 4);
     o.stringTable   = alignUp(o.identifierHashes + hdr.identifierCount * 4, 4);
     o.overflowTable = o.stringTable   + hdr.stringCount         * sizeof(SmallStringTableEntry);
@@ -41,7 +42,7 @@ inline void validateStringSectionLayout(const HBCFileHeader& hdr, uint64_t fileS
     auto alignUp64 = [](uint64_t n, uint64_t a) { return (n + a - 1) & ~(a - 1); };
 
     const uint64_t kindTable = alignUp64(
-        sizeof(HBCFileHeader) + uint64_t(hdr.functionCount) * sizeof(SmallFuncHeader), 4);
+        sizeof(HBCFileHeader) + uint64_t(hdr.functionCount) * smallFuncHeaderSize(hdr.version), 4);
     const uint64_t identifierHashes = alignUp64(
         kindTable + uint64_t(hdr.stringKindCount) * 4, 4);
     const uint64_t stringTable = alignUp64(
