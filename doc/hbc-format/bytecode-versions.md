@@ -24,7 +24,13 @@
 > Reading the wrong commit is what produced the false "this part of the format
 > is in no public source" claims about debug info, corrected on this date.
 
-**97, 98, 99 are a trap.** They exist only on the **`static_h` branch** - Static Hermes, Meta's experimental ahead-of-time *JS->native* compiler - which happens to be the repo's **default branch** (this is exactly why earlier notes misread it). Static Hermes is **not** what React Native uses to produce the bytecode bundle in shipping apps. Targeting 97/98/99 means targeting a compiler almost no real app uses.
+**97, 98, 99 are a trap.** They exist only on the **`static_h` branch** - Static Hermes, Meta's experimental ahead-of-time *JS->native* compiler - which happens to be the repo's **default branch** (this is exactly why earlier notes misread it). Static Hermes is **not** what React Native uses to produce the bytecode bundle in shipping apps for RN ≤ 0.83. But from RN 0.84 the default is **Hermes V1**, which is Static Hermes and emits **HBC 98**, so 98 *does* ship in new apps.
+
+> **Update: v98 is now supported.** hermit parses, round-trips and patches HBC 98
+> as a second wire format (12-byte function headers, object shape table,
+> renumbered opcodes), dispatched by a per-version `FormatVersion` module. The
+> delta from v96 is in [`v98-format.md`](v98-format.md). v97 and v99 are still
+> uncovered (v97 ships in no app; v99 is unreleased).
 
 > **Correction history:** an earlier version of this file claimed `main` was 99 with 97/98 as recent mainline bumps and "98 = most current real apps." That was wrong - it read `BytecodeVersion.h` on the default branch (`static_h`) and assumed it was the HBC mainline. The cited bump commits are real but live on `static_h`. The whole project target was retargeted from 97/98/99 -> **96** (primary) + 94/95 (multi-version validation) as a result.
 
@@ -132,7 +138,7 @@ grep BYTECODE_VERSION include/hermes/BCGen/HBC/BytecodeVersion.h   # confirm
 ```
 This pulls LLVM and takes a while - only needed for versions with no RN prebuilt (95) or for the Static Hermes future-work line (`git checkout static_h`).
 
-### Compilers + VMs used by the multi-version tests (94, 95)
+### Compilers + VMs used by the multi-version tests (94, 95, 98)
 
 `tests/integration/patcher/test_multiversion.py` compiles samples with the
 `hermes` of each version and runs the patched output on the VM of the **same**
@@ -154,9 +160,22 @@ for v in 94 95; do
 done
 ```
 
-The tests look in `$HERMES94` / `$HERMES95`, then in
-`~/.local/share/hermit/hermes/hermes9{4,5}`; a missing compiler skips its version.
-Note: `hermes` v94–96 compiles ES6 `class` only with `-Xes6-class`.
+For **98**, build from the Static Hermes branch (the version 98 lives on
+`static_h`, not `main`):
+
+```bash
+git worktree add --detach /tmp/hermes98 c00cc5759   # first commit at BYTECODE_VERSION = 98
+sed -i '' 's/cmake_policy(SET CMP0026 OLD)//' /tmp/hermes98/CMakeLists.txt
+cmake -S /tmp/hermes98 -B /tmp/build98 -G Ninja -DCMAKE_BUILD_TYPE=Release \
+      -DHERMES_ENABLE_TEST_SUITE=OFF -DCMAKE_POLICY_VERSION_MINIMUM=3.5
+cmake --build /tmp/build98 --target hermes
+cp /tmp/build98/bin/hermes ~/.local/share/hermit/hermes/hermes98   # macOS `install` has no -D
+```
+
+The tests look in `$HERMES94` / `$HERMES95` / `$HERMES98`, then in
+`~/.local/share/hermit/hermes/hermes9{4,5,8}`; a missing compiler skips its
+version. Note: `hermes` v94–96 compiles ES6 `class` only with `-Xes6-class`, and
+the v98 build above rejects ES6 `class` at runtime - keep v98 samples class-free.
 
 The **seeder** pins these compilers so the corpus is byte-stable. The **parser** must handle whatever the real target apps use - confirm with `xxd -s 8 -l 4` on each app first.
 

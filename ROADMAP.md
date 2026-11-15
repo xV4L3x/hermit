@@ -36,7 +36,10 @@ Status legend: **[done]** shipped · **[wip]** partially implemented · **[plann
 - **[planned]** `B16` interpret header fields left unparsed: native CommonJS, `segmentID`.
 - **[planned]** `B17` multi-source-file debug info (`StringTableEntry` / `FileRegion`).
 - **[planned]** `B18` determine the Scope Descriptor `flags` byte semantics.
-- **[planned]** `B27` HBC v97/v98 support (Hermes V1, default from RN 0.84).
+- **[done]** `B27` HBC v98 support (Static Hermes / Hermes V1, default from RN
+  0.84): parser, byte-identical round-trip and the structural patcher, dispatched
+  through a per-version `FormatVersion` module. See
+  [`doc/hbc-format/v98-format.md`](doc/hbc-format/v98-format.md).
 - **[planned]** `B34` dump of additional sections (object shapes, regexp, cjs-modules).
 - **[planned]** `B37` read legacy HBC versions (40–93).
 

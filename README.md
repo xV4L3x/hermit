@@ -36,7 +36,7 @@ file round-trips byte for byte.
 - **Parser**: header, string table (UTF-16 and overflow entries included),
   function table (overflow headers and shared bytecode bodies included),
   literal buffers, exception handlers, debug info, function source table.
-- **Disassembler** with per-version opcode tables (94, 95, 96).
+- **Disassembler** with per-version opcode tables (94, 95, 96, 98).
 - **Control-flow graph** with DOT export, call graph, string cross-references,
   Metro module recovery.
 - **Decompiler** from the CFG to readable JavaScript: if/else, loops,
@@ -52,9 +52,11 @@ file round-trips byte for byte.
 |---|---|
 | **96** | Primary target. What shipping React Native apps use: RN 0.73 to 0.83, and RN 0.84+ with Hermes V1 disabled. |
 | 94, 95 | Validated. The format is identical to 96, only the opcode tables differ. |
+| **98** | Static Hermes (Hermes V1), the default from RN 0.84. A separate wire format (12-byte function headers, object shape table, renumbered opcodes); parsed, round-tripped and patched like 96. |
 
-Apps built with Hermes V1 (the default from RN 0.84) emit HBC 98, which is not
-supported yet. Format notes are in [`doc/hbc-format/`](doc/hbc-format/).
+Per-version differences are handled by a `FormatVersion` module selected at
+runtime (like the opcode tables), not by inline version branches. Format notes
+are in [`doc/hbc-format/`](doc/hbc-format/).
 
 ## Prebuilt binaries
 
@@ -356,9 +358,10 @@ Some tests also use real bundles under `seeder/real-apps/`.
 
 Many tests patch a file and run it on the Hermes VM to check its output. They
 need a `hermes` binary on your `PATH` (HBC 96), and for the multi-version tests
-a binary per version: `$HERMES94` and `$HERMES95`, or
-`~/.local/share/hermit/hermes/hermes94` and `hermes95`. Tests whose VM is not
-available are skipped.
+a binary per version: `$HERMES94` / `$HERMES95` / `$HERMES98`, or
+`~/.local/share/hermit/hermes/hermes{94,95,98}`. Tests whose VM is not
+available are skipped. (HBC 98 is built from the Static Hermes `static_h` branch;
+see [`doc/hbc-format/bytecode-versions.md`](doc/hbc-format/bytecode-versions.md).)
 
 ## Project layout
 
@@ -375,7 +378,9 @@ available are skipped.
 
 ## Limitations
 
-- HBC 98 (Hermes V1) is not supported.
+- Object-literal *resize* on v94-96 rewrites inline operands; on v98 it appends a
+  new object shape entry. Both are supported, but editing the *keys* of an
+  existing shared shape is not.
 - Functions containing `SwitchImm` or generator state (`SaveGenerator`) cannot
   be edited, and those opcodes cannot be inserted.
 - Increasing the register count of a function with an exception handler is
