@@ -15,6 +15,8 @@ namespace hbc {
 
 std::vector<CallSite>    computeCallGraph(const HBCFile& self);
 std::vector<StringXRef>  computeStringXrefs(const HBCFile& self);
+// One string's references, without the whole-file index (bounded memory).
+StringXRef               computeStringXref(const HBCFile& self, uint32_t stringIndex);
 struct MetroModules {
     std::vector<MetroModule> modules;  // one per __d call, in global-function order
     std::vector<uint32_t>   entries;  // __r arguments, in call order

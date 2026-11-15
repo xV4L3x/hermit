@@ -2,6 +2,7 @@
 #include "analysis/dataflow.h"
 #include "hbc/hbc.h"
 #include "hbc/format_version.h"
+#include "disasm/disasm.h"
 #include "util/slp.h"
 #include "format/opcode_categories.h"
 #include <algorithm>
@@ -151,6 +152,62 @@ std::vector<StringXRef> computeStringXrefs(const HBCFile& self) {
     for (uint32_t i = 0; i < static_cast<uint32_t>(strs.size()); ++i)
         if (!sitesByString[i].empty())
             result.push_back({i, strs[i], std::move(sitesByString[i])});
+    return result;
+}
+
+// Reference sites of ONE string, without building (or caching) the whole-file
+// index. Disassembles every function once, uncached, so memory stays bounded on
+// huge bundles (324k functions) where computeStringXrefs() would OOM. Empty
+// `sites` means the string is unreferenced.
+StringXRef computeStringXref(const HBCFile& self, uint32_t stringIndex) {
+    const auto& strs = self.strings();
+    StringXRef result;
+    result.stringIndex = stringIndex;
+    result.stringValue = stringIndex < strs.size() ? strs[stringIndex] : std::string();
+    if (stringIndex >= strs.size()) return result;
+
+    const std::string shapeTable = shapeTableBytes(self);
+    // Decode each literal buffer segment once (freed when the query returns).
+    std::map<std::tuple<const std::string*, uint32_t, uint32_t>, std::vector<LiteralStringHit>> segments;
+    auto hitsOf = [&](const std::string& buffer, uint32_t offset, uint32_t count)
+        -> const std::vector<LiteralStringHit>& {
+        auto key = std::make_tuple(&buffer, offset, count);
+        auto it = segments.find(key);
+        if (it == segments.end())
+            it = segments.emplace(key, stringsInLiteral(buffer, offset, count, strs.size())).first;
+        return it->second;
+    };
+
+    const auto& funcs = self.functions();
+    const auto& kinds = self.stringKinds();
+    const uint8_t* raw = self.raw_data();
+    const uint32_t rawSize = static_cast<uint32_t>(self.raw_size());
+    for (uint32_t fidx = 0; fidx < funcs.size(); ++fidx) {
+        const FunctionInfo& func = funcs[fidx];
+        const std::vector<Instruction> instrs = disassemble(
+            raw + func.offset, func.bytecodeSizeInBytes, self.version(),
+            strs, kinds, raw, rawSize);
+        for (const auto& instr : instrs) {
+            for (const auto& op : instr.operands)
+                if (op.type == Operand::Type::StringID && op.u32 == stringIndex)
+                    result.sites.push_back({fidx, instr.offset, instr.mnemonic});
+
+            LiteralSite lit;
+            if (!literalSiteFrom(self, shapeTable, func, instr, lit)) continue;
+            auto addHits = [&](const std::string& buf, uint32_t off, XRefKind kind) {
+                for (const auto& h : hitsOf(buf, off, lit.count))
+                    if (h.stringIndex == stringIndex)
+                        result.sites.push_back({fidx, lit.instructionOffset, lit.mnemonic,
+                                                kind, h.firstElement, h.elementCount});
+            };
+            if (lit.isObject) {
+                addHits(self.obj_key_buffer(),   lit.keyBufferIdx, XRefKind::ObjectKey);
+                addHits(self.obj_value_buffer(), lit.bufferIdx,    XRefKind::ObjectValue);
+            } else {
+                addHits(self.array_buffer(),     lit.bufferIdx,    XRefKind::ArrayElement);
+            }
+        }
+    }
     return result;
 }
 

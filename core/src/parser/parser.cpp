@@ -65,6 +65,9 @@ struct HBCFile::Impl {
     mutable std::optional<std::map<uint32_t, std::vector<CallerSite>>> callerIndex;
     mutable std::optional<std::vector<StringXRef>> stringXrefs;
     mutable std::vector<int32_t> stringXrefPos;  // string index -> position in stringXrefs, -1 if none
+    // Per-string xref memo for string_xref() when the whole-file index isn't
+    // built (bounded memory on huge bundles). nullopt value = no references.
+    mutable std::map<uint32_t, std::optional<StringXRef>> stringXrefOne;
     mutable std::map<uint32_t, std::vector<Instruction>> disasmCache;     // per function
     mutable std::map<uint32_t, CFGData>                  cfgCache;        // per function
     mutable std::optional<std::vector<CJSModuleInfo>> cjsModules;
@@ -220,10 +223,22 @@ const std::vector<StringXRef>& HBCFile::string_xrefs() const {
 }
 
 const StringXRef* HBCFile::string_xref(uint32_t stringIndex) const {
-    const auto& xrefs = string_xrefs();  // builds the memo + index
-    if (stringIndex >= impl_->stringXrefPos.size()) return nullptr;
-    const int32_t pos = impl_->stringXrefPos[stringIndex];
-    return pos < 0 ? nullptr : &xrefs[pos];
+    // Use the whole-file index if it is already built; otherwise compute just
+    // this string's references (no whole-file disasm cache, no all-strings index),
+    // which keeps memory bounded on huge bundles where string_xrefs() would OOM.
+    if (impl_->stringXrefs) {
+        if (stringIndex >= impl_->stringXrefPos.size()) return nullptr;
+        const int32_t pos = impl_->stringXrefPos[stringIndex];
+        return pos < 0 ? nullptr : &(*impl_->stringXrefs)[pos];
+    }
+    auto it = impl_->stringXrefOne.find(stringIndex);
+    if (it == impl_->stringXrefOne.end()) {
+        StringXRef x = computeStringXref(*this, stringIndex);
+        std::optional<StringXRef> v;
+        if (!x.sites.empty()) v = std::move(x);
+        it = impl_->stringXrefOne.emplace(stringIndex, std::move(v)).first;
+    }
+    return it->second ? &*it->second : nullptr;
 }
 
 const std::vector<MetroModule>& HBCFile::recover_modules() const {
