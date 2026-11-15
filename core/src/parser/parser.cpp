@@ -494,9 +494,11 @@ const std::string& HBCFile::obj_value_buffer() const {
     return *impl_->objValueBuffer;
 }
 
-uint32_t HBCFile::array_buffer_offset()     const { return offsetOfSection(*this, "array buffer"); }
+// v98 merges the array and object-value buffers into the "literal value buffer"
+// section, so the format module names the section each accessor reads.
+uint32_t HBCFile::array_buffer_offset()     const { return offsetOfSection(*this, formatForVersion(version())->arrayBufferSection()); }
 uint32_t HBCFile::obj_key_buffer_offset()   const { return offsetOfSection(*this, "object key buffer"); }
-uint32_t HBCFile::obj_value_buffer_offset() const { return offsetOfSection(*this, "object value buffer"); }
+uint32_t HBCFile::obj_value_buffer_offset() const { return offsetOfSection(*this, formatForVersion(version())->objValueBufferSection()); }
 
 // -----------------------------------------------------------------------------
 // Disassembly and CFG

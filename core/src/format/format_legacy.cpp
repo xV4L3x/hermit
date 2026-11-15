@@ -86,6 +86,8 @@ public:
     const char* arrayBufferSection()    const override { return "array buffer"; }
     const char* objValueBufferSection() const override { return "object value buffer"; }
     const char* objValueWordSection()   const override { return "object value buffer"; }
+    uint32_t objectValueOperandIndex()   const override { return 4; }
+    bool     objectLiteralUsesShapeTable() const override { return false; }
 
     void writeFuncHeader(uint8_t* fhBase, uint32_t index,
                          uint8_t* info, uint32_t infoStart, size_t infoSize,
@@ -122,6 +124,27 @@ public:
         h.arrayBufferSize    = arrayOrLiteralValueBytes;
         h.objKeyBufferSize   = objKeyBytes;
         h.objValueBufferSize = objValueOrShapeBytes;
+    }
+
+    std::vector<uint8_t> buildNewSmallHeader(uint32_t offset, uint32_t bodySize,
+        uint32_t paramCount, uint32_t nameId, uint32_t frameSize, uint32_t infoOffset,
+        bool strictMode) const override {
+        SmallFuncHeader fh{};
+        fh.offset                 = offset;
+        fh.paramCount             = paramCount;
+        fh.bytecodeSizeInBytes    = bodySize;
+        fh.functionName           = nameId;
+        fh.infoOffset             = infoOffset;
+        fh.frameSize              = frameSize;
+        fh.environmentSize        = 0;
+        fh.highestReadCacheIndex  = 0;
+        fh.highestWriteCacheIndex = 0;
+        fh.flags = FunctionFlags{};
+        fh.flags.prohibitInvoke = kProhibitInvokeNone;  // callable + constructible
+        fh.flags.strictMode     = strictMode;
+        std::vector<uint8_t> bytes(sizeof(SmallFuncHeader));
+        std::memcpy(bytes.data(), &fh, sizeof(SmallFuncHeader));
+        return bytes;
     }
 
 private:

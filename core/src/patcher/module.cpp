@@ -182,32 +182,6 @@ uint32_t computeMinSafeFrameSize(const OpcodeInfo* table, const std::vector<AsmI
     return (anyReg ? maxReg + 1 : 0) + maxCallOverhead;
 }
 
-// SmallFuncHeader of the function appended by add_function().
-std::vector<uint8_t> buildNewFunctionHeader(uint32_t offset, uint32_t infoOffset, uint32_t bodySize,
-                                            uint32_t paramCount, uint32_t nameId,
-                                            uint32_t frameSize, bool strictMode) {
-    SmallFuncHeader fh{};
-    fh.offset                 = offset;
-    fh.paramCount             = paramCount;
-    fh.bytecodeSizeInBytes    = bodySize;
-    fh.functionName           = nameId;
-    fh.infoOffset             = infoOffset;
-    fh.frameSize              = frameSize;
-    fh.environmentSize        = 0;
-    fh.highestReadCacheIndex  = 0;
-    fh.highestWriteCacheIndex = 0;
-    // prohibitInvoke must be None (callable and constructible, like a plain
-    // `function`), not 0: 0 is ProhibitCall (class constructor), and a Call on
-    // the new function would fail at runtime with "Class constructor invoked
-    // without new".
-    fh.flags = FunctionFlags{};
-    fh.flags.prohibitInvoke = kProhibitInvokeNone;
-    fh.flags.strictMode     = strictMode;
-
-    std::vector<uint8_t> bytes(sizeof(SmallFuncHeader));
-    std::memcpy(bytes.data(), &fh, sizeof(SmallFuncHeader));
-    return bytes;
-}
 
 }  // namespace
 
@@ -616,11 +590,12 @@ void Module::set_literal_value(uint32_t funcIdx, uint32_t instrOffset,
             std::string(who) + ": a literal edit is already queued - "
             "only one edit per serialize (two separate commits)");
 
-    const uint32_t bufIdx = isObject ? 4 : 3;
+    const FormatVersion* fmt = formatForVersion(version_);
+    const uint32_t bufIdx = isObject ? fmt->objectValueOperandIndex() : 3;
     const LiteralTarget t = locateLiteralSite(who, "editing a literal", funcIdx, instrOffset,
                                               isObject, bufIdx);
 
-    const char* midName = isObject ? "object value buffer" : "array buffer";
+    const char* midName = isObject ? fmt->objValueBufferSection() : fmt->arrayBufferSection();
     PendingLiteralEdit pl;
     pl.operandBytePos = t.operandBytePos[bufIdx];
     pl.operandWidth   = t.operandWidth[bufIdx];
@@ -641,7 +616,13 @@ void Module::resize_literal(uint32_t funcIdx, uint32_t instrOffset, bool isObjec
             std::string(who) + ": a literal edit is already queued - "
             "only one edit per serialize (two separate commits)");
 
-    const uint32_t valueIdx = isObject ? 4 : 3;
+    const FormatVersion* fmt = formatForVersion(version_);
+    if (isObject && fmt->objectLiteralUsesShapeTable())
+        throw std::runtime_error(
+            std::string(who) + ": object-literal resize is not supported on this version - "
+            "the key set and element count live in the object shape table, not in inline "
+            "operands");
+    const uint32_t valueIdx = isObject ? fmt->objectValueOperandIndex() : 3;
     const LiteralTarget t = locateLiteralSite(who, "adding/removing an element", funcIdx,
                                               instrOffset, isObject, valueIdx);
 
@@ -669,7 +650,7 @@ void Module::resize_literal(uint32_t funcIdx, uint32_t instrOffset, bool isObjec
     pr.isObject               = isObject;
     pr.newBufferBytes         = newBufferBytes;
 
-    pr.valueMidSectionName  = isObject ? "object value buffer" : "array buffer";
+    pr.valueMidSectionName  = isObject ? fmt->objValueBufferSection() : fmt->arrayBufferSection();
     pr.valueOperandBytePos  = t.operandBytePos[valueIdx];
     pr.valueOperandWidth    = t.operandWidth[valueIdx];
     pr.valueOffRel          = newBufferOffset(who, pr.valueMidSectionName.c_str(), pr.valueOperandWidth);
@@ -984,15 +965,18 @@ std::vector<uint8_t> Module::serialize() {
             throw std::runtime_error(
                 "Module::add_function: new function offset >= 2^25 - "
                 "would need promotion to overflow (not supported)");
-        if (newDbgOff >= (1 << 25))
+        const PendingFunction& pf = *pendingNewFunction_;
+        // The new function has no exception handler and no debug info, so it has
+        // no info section: infoOffset is used only by the v94-96 header and is
+        // ignored on v98. It still must fit the 25-bit field where it is stored.
+        if (fmt->funcHeaderSize() == sizeof(SmallFuncHeader) && newDbgOff >= (1 << 25))
             throw std::runtime_error(
                 "Module::add_function: new function infoOffset >= 2^25 (25-bit field)");
-
-        const PendingFunction& pf = *pendingNewFunction_;
-        newFuncHeaderBytes = buildNewFunctionHeader(
-            static_cast<uint32_t>(newFuncOff), static_cast<uint32_t>(newDbgOff),
+        newFuncHeaderBytes = fmt->buildNewSmallHeader(
+            static_cast<uint32_t>(newFuncOff),
             static_cast<uint32_t>(newFuncAsm.bytecode.size()),
-            pf.paramCount, pf.functionNameId, pf.frameSize, pf.strictMode);
+            pf.paramCount, pf.functionNameId, pf.frameSize,
+            static_cast<uint32_t>(newDbgOff), pf.strictMode);
     }
 
     // 6. Rewrite the function table (small header + overflow large header). The

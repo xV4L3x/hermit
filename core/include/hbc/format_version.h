@@ -100,6 +100,14 @@ public:
     // value buffer on v94-96, the object shape table on v98.
     virtual const char* objValueWordSection()   const = 0;
 
+    // Operand index of the value-buffer index in a NewObjectWithBuffer[Long]
+    // instruction (4 on v94-96, 2 on v98).
+    virtual uint32_t objectValueOperandIndex() const = 0;
+    // True if object literals reference their keys/count through the object shape
+    // table (v98) rather than inline operands (v94-96). When true, object-literal
+    // resize (which rewrites inline count/key operands) is not supported.
+    virtual bool objectLiteralUsesShapeTable() const = 0;
+
     // --- serialize ---
     // Writes small header `index` into `fhBase` and, when overflowed, the large
     // header into `info` at `largeOffset - infoStart`. Throws on field overflow.
@@ -112,6 +120,13 @@ public:
     // which this converts to the stored entry count).
     virtual void writeHeaderBufferWords(HBCFileHeader& h, uint32_t arrayOrLiteralValueBytes,
                                         uint32_t objKeyBytes, uint32_t objValueOrShapeBytes) const = 0;
+
+    // Builds the small header bytes for a function appended by add_function: no
+    // exception handler, no debug info, prohibitInvoke = None. `infoOffset` is
+    // used only by v94-96 (v98 non-overflow functions have no info section).
+    virtual std::vector<uint8_t> buildNewSmallHeader(uint32_t offset, uint32_t bodySize,
+        uint32_t paramCount, uint32_t nameId, uint32_t frameSize, uint32_t infoOffset,
+        bool strictMode) const = 0;
 };
 
 // The format module for `version`, or nullptr if unsupported.

@@ -104,7 +104,7 @@ def _compiler(version):
     return str(p) if p.exists() else None
 
 
-@pytest.mark.parametrize("version,opt", [(94, "-O0"), (95, "-O0"), (96, "-O0"), (96, "-O")])
+@pytest.mark.parametrize("version,opt", [(94, "-O0"), (95, "-O0"), (96, "-O0"), (96, "-O"), (98, "-O0")])
 def test_same_table_on_every_version_and_optimization(tmp_path, version, opt):
     """The encoding is the same on HBC 94, 95 and 96, optimized or not."""
     cc = _compiler(version)
