@@ -1,6 +1,7 @@
 #include "hbc/module.h"
 
 #include "hbc/format.h"
+#include "hbc/format_v98.h"            // v98 structs + smallFuncHeaderSize()
 #include "format/opcodes.h"            // OpcodeInfo, getOpcodeTable, operandSize, JumpKind
 #include "format/opcode_categories.h"  // callArgInfo
 #include "disasm/disasm.h"      // disassemble()
@@ -227,11 +228,17 @@ Module Module::from(const HBCFile& file) {
 
     m.header_.assign(raw, raw + sizeof(HBCFileHeader));
 
+    // v98 uses 12-byte function headers with a different overflow encoding; the
+    // shared structs (SmallFuncHeader, 16 bytes) cover v94-96.
+    const bool     isV98  = m.version_ >= 97;
+    const uint32_t fhSize = smallFuncHeaderSize(m.version_);
+
     const uint8_t* fhBase = raw + sizeof(HBCFileHeader);
-    m.funcHeaders_.assign(fhBase, fhBase + count * sizeof(SmallFuncHeader));
+    m.funcHeaders_.assign(fhBase, fhBase + count * fhSize);
     m.origStringCount_ = h.stringCount;
 
-    const auto* sfh = reinterpret_cast<const SmallFuncHeader*>(fhBase);
+    const auto* sfh   = reinterpret_cast<const SmallFuncHeader*>(fhBase);
+    const auto* sfh98 = reinterpret_cast<const SmallFuncHeader_v98*>(fhBase);
     const std::vector<FunctionInfo>& funcs = file.functions();
 
     m.funcs_.resize(count);
@@ -242,13 +249,15 @@ Module Module::from(const HBCFile& file) {
         Module::FuncState& fs = m.funcs_[i];
         fs.origOffset     = fi.offset;
         fs.origSize       = fi.bytecodeSizeInBytes;
-        fs.origInfoOffset = fi.infoOffset;         // overflow: largeOff + 32
+        fs.origInfoOffset = fi.infoOffset;         // overflow: after the large header
         fs.origFrameSize  = fi.frameSize;
         fs.hasEH          = fi.hasExceptionHandler;
         fs.hasDebugInfo   = fi.hasDebugInfo;
-        fs.overflowed     = sfh[i].flags.overflowed;
+        fs.overflowed     = isV98 ? sfh98[i].flags.overflowed : sfh[i].flags.overflowed;
         if (fs.overflowed)
-            fs.origLargeOff = (sfh[i].offset & 0xFFFFu) | ((sfh[i].infoOffset & 0xFFFFu) << 16);
+            fs.origLargeOff = isV98
+                ? ((static_cast<uint32_t>(sfh98[i].functionName) << 16) | sfh98[i].offset)
+                : ((sfh[i].offset & 0xFFFFu) | ((sfh[i].infoOffset & 0xFFFFu) << 16));
 
         if (fi.offset + fi.bytecodeSizeInBytes > rawSize)
             throw std::runtime_error("Module: function " + std::to_string(i) +
@@ -257,7 +266,7 @@ Module Module::from(const HBCFile& file) {
         blobEnd   = std::max(blobEnd,   fi.offset + fi.bytecodeSizeInBytes);
     }
 
-    const uint32_t feEnd = sizeof(HBCFileHeader) + count * sizeof(SmallFuncHeader);
+    const uint32_t feEnd = sizeof(HBCFileHeader) + count * fhSize;
     if (blobStart < feEnd)
         throw std::runtime_error("Module: first bytecode offset is inconsistent with the layout");
     m.blobStart_     = blobStart;
@@ -281,6 +290,7 @@ Module Module::from(const HBCFile& file) {
     // before the bytecode is not captured, serialize() regenerates it.
     static const char* kMidNames[] = {
         "array buffer", "object key buffer", "object value buffer",
+        "literal value buffer", "object shape table",   // v98 (merged value buffer + shapes)
         "bigint table", "bigint storage", "regexp table", "regexp storage",
         "cjs module table", "function source table",
     };
@@ -854,9 +864,11 @@ std::vector<uint8_t> Module::serialize() {
             "set_string_value, set_literal_value, resize_literal, add_function) "
             "cannot be combined in the same serialize - do two separate commits");
 
-    // add_function grows the function table by one 16-byte header: everything
-    // after it shifts through the same front-growth as the string tables.
-    const uint32_t newFuncTableEnd = funcTableEnd_ + (pendingNewFunction_ ? 16u : 0u);
+    // add_function grows the function table by one header (12 bytes on v98, 16 on
+    // v94-96): everything after it shifts through the same front-growth as the
+    // string tables.
+    const uint32_t newFuncTableEnd =
+        funcTableEnd_ + (pendingNewFunction_ ? smallFuncHeaderSize(version_) : 0u);
 
     // 1. Bytecode blob: verbatim, with the dirty body spliced in.
     std::vector<uint8_t> newBlob = bytecodeBlob_;
@@ -985,8 +997,12 @@ std::vector<uint8_t> Module::serialize() {
     }
 
     // 6. Rewrite the function table (SmallFuncHeader, and the FunctionHeader
-    //    in the info block for overflowed functions).
-    auto* fh = reinterpret_cast<SmallFuncHeader*>(funcHeaders_.data());
+    //    in the info block for overflowed functions). v98 uses 12-byte small
+    //    headers and a 23-byte large header with no infoOffset / environmentSize
+    //    field; its overflow offset is packed into offset | (functionName << 16).
+    const bool isV98 = version_ >= 97;
+    auto* fh   = reinterpret_cast<SmallFuncHeader*>(funcHeaders_.data());       // v94-96
+    auto* fh98 = reinterpret_cast<SmallFuncHeader_v98*>(funcHeaders_.data());   // v98
     const FuncState* dirty = dirtyIdx >= 0 ? &funcs_[dirtyIdx] : nullptr;
     for (uint32_t i = 0; i < count; ++i) {
         FuncState& fs = funcs_[i];
@@ -1006,34 +1022,56 @@ std::vector<uint8_t> Module::serialize() {
             if (newLargeOff < 0)
                 throw std::runtime_error("Module: negative largeOff");
             const size_t p = fs.origLargeOff - oldInfoStart_;   // position in `info`
-            if (p + sizeof(FunctionHeader) > info.size())
+            const size_t largeHdrSize = isV98 ? sizeof(FunctionHeader_v98) : sizeof(FunctionHeader);
+            if (p + largeHdrSize > info.size())
                 throw std::runtime_error("Module: overflow FunctionHeader beyond the info block");
             const uint32_t off32 = static_cast<uint32_t>(newOff);
             const uint32_t lo32  = static_cast<uint32_t>(newLargeOff);
-            std::memcpy(info.data() + p +  0, &off32, 4);   // FunctionHeader.offset
-            std::memcpy(info.data() + p +  8, &newSz, 4);   // FunctionHeader.bytecodeSizeInBytes
-            std::memcpy(info.data() + p + 16, &lo32,  4);   // FunctionHeader.infoOffset (sentinel = largeOff)
-            if (changedBody) {
-                const uint32_t fsz = fs.newFrameSize ? fs.newFrameSize : fs.origFrameSize;
-                std::memcpy(info.data() + p + 20, &fsz, 4); // FunctionHeader.frameSize
+            const uint32_t fsz   = fs.newFrameSize ? fs.newFrameSize : fs.origFrameSize;
+            if (isV98) {
+                // FunctionHeader_v98: offset@0, bytecodeSizeInBytes@8, frameSize@16
+                // (uint32). There is no infoOffset field.
+                std::memcpy(info.data() + p +  0, &off32, 4);
+                std::memcpy(info.data() + p +  8, &newSz, 4);
+                if (changedBody)
+                    std::memcpy(info.data() + p + 16, &fsz, 4);
+                // The small header packs the large offset into offset | (functionName << 16).
+                fh98[i].offset       = lo32 & 0xFFFFu;
+                fh98[i].functionName = lo32 >> 16;
+            } else {
+                std::memcpy(info.data() + p +  0, &off32, 4);   // FunctionHeader.offset
+                std::memcpy(info.data() + p +  8, &newSz, 4);   // bytecodeSizeInBytes
+                std::memcpy(info.data() + p + 16, &lo32,  4);   // infoOffset (sentinel = largeOff)
+                if (changedBody)
+                    std::memcpy(info.data() + p + 20, &fsz, 4); // frameSize
+                // SmallFuncHeader keeps the new largeOff in the low 16 bits of
+                // offset / infoOffset; the overflowed flag is unchanged.
+                fh[i].offset     = (fh[i].offset     & ~0xFFFFu) | (lo32 & 0xFFFFu);
+                fh[i].infoOffset = (fh[i].infoOffset & ~0xFFFFu) | ((lo32 >> 16) & 0xFFFFu);
             }
-            // SmallFuncHeader keeps the new largeOff in the low 16 bits of
-            // offset / infoOffset; the overflowed flag is unchanged.
-            fh[i].offset     = (fh[i].offset     & ~0xFFFFu) | (lo32 & 0xFFFFu);
-            fh[i].infoOffset = (fh[i].infoOffset & ~0xFFFFu) | ((lo32 >> 16) & 0xFFFFu);
         } else {
             if (newOff >= (1 << 25))
                 throw std::runtime_error("Module: function offset >= 2^25 - would need promotion to overflow (not supported)");
             if (newSz >= (1u << 15))
                 throw std::runtime_error("Module: function " +
                     std::to_string(i) + " bytecodeSizeInBytes >= 32768 - would need promotion to overflow (not supported)");
-            if (newInfo >= (1 << 25))
+            if (!isV98 && newInfo >= (1 << 25))
                 throw std::runtime_error("Module: function infoOffset >= 2^25 (25-bit field)");
-            fh[i].offset              = static_cast<uint32_t>(newOff);
-            fh[i].bytecodeSizeInBytes = newSz;
-            fh[i].infoOffset          = static_cast<uint32_t>(newInfo);
-            if (changedBody)
-                fh[i].frameSize = fs.newFrameSize ? fs.newFrameSize : fs.origFrameSize;
+            const uint32_t fsz = fs.newFrameSize ? fs.newFrameSize : fs.origFrameSize;
+            if (isV98) {
+                // No infoOffset field: a non-overflowed v98 function has no info
+                // section (it would be overflowed otherwise).
+                fh98[i].offset              = static_cast<uint32_t>(newOff);
+                fh98[i].bytecodeSizeInBytes = newSz;
+                if (changedBody)
+                    fh98[i].frameSize = static_cast<uint8_t>(fsz);
+            } else {
+                fh[i].offset              = static_cast<uint32_t>(newOff);
+                fh[i].bytecodeSizeInBytes = newSz;
+                fh[i].infoOffset          = static_cast<uint32_t>(newInfo);
+                if (changedBody)
+                    fh[i].frameSize = fsz;
+            }
         }
     }
 
@@ -1107,9 +1145,17 @@ std::vector<uint8_t> Module::serialize() {
             if (ms.name == name) return static_cast<uint32_t>(ms.bytes.size());
         return 0;
     };
-    hdr->arrayBufferSize    = midSizeOf("array buffer");
-    hdr->objKeyBufferSize   = midSizeOf("object key buffer");
-    hdr->objValueBufferSize = midSizeOf("object value buffer");
+    if (isV98) {
+        // v98 header words: arrayBufferSize holds literalValueBufferSize,
+        // objValueBufferSize holds objShapeTableCount (a count of 8-byte entries).
+        hdr->arrayBufferSize    = midSizeOf("literal value buffer");
+        hdr->objKeyBufferSize   = midSizeOf("object key buffer");
+        hdr->objValueBufferSize = midSizeOf("object shape table") / 8;
+    } else {
+        hdr->arrayBufferSize    = midSizeOf("array buffer");
+        hdr->objKeyBufferSize   = midSizeOf("object key buffer");
+        hdr->objValueBufferSize = midSizeOf("object value buffer");
+    }
 
     // 9. Output: header, function table (+ new header), string sections, mid
     //    sections (aligned), pad, bytecode, pad, info, debug info, footer.
