@@ -17,3 +17,6 @@ seeder/real-apps/
 
 # hermes-decomp cache
 *.hdcache
+
+# Local Hermes reference clone + built per-version VMs (large, not committed)
+references/
