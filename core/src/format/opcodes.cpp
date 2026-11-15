@@ -6,9 +6,11 @@ namespace hbc {
 namespace v94 { extern const OpcodeInfo OPCODES[256]; }
 namespace v95 { extern const OpcodeInfo OPCODES[256]; }
 namespace v96 { extern const OpcodeInfo OPCODES[256]; }
+namespace v98 { extern const OpcodeInfo OPCODES[256]; }  // Static Hermes (RN 0.84+)
 
 const OpcodeInfo* getOpcodeTable(uint32_t version) {
     switch (version) {
+        case 98: return v98::OPCODES;
         case 96: return v96::OPCODES;
         case 95: return v95::OPCODES;
         case 94: return v94::OPCODES;
