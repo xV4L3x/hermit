@@ -94,16 +94,4 @@ static_assert(sizeof(ShapeTableEntry) == 8);
 
 #pragma pack(pop)
 
-// Size of a function-table entry (the SmallFuncHeader) for a given HBC version.
-// v97/98 (Static Hermes) use a 12-byte header; v94-96 use 16 bytes. Section
-// offsets cascade from this, so the string/buffer layout depends on it.
-inline uint32_t smallFuncHeaderSize(uint32_t version) {
-    return version >= 97 ? sizeof(SmallFuncHeader_v98) : 16;
-}
-
-// Size of the overflow (large) function header for a given HBC version.
-inline uint32_t largeFuncHeaderSize(uint32_t version) {
-    return version >= 97 ? sizeof(FunctionHeader_v98) : 32;
-}
-
 } // namespace hbc

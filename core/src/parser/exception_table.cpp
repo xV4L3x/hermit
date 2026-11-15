@@ -1,5 +1,6 @@
 #include "parser/exception_table.h"
 #include "hbc/format.h"
+#include "hbc/format_version.h"
 
 #include <cstdio>
 #include <cstring>
@@ -12,7 +13,7 @@ void parseExceptionHandlers(
     uint32_t                   version,
     std::vector<FunctionInfo>& functions)
 {
-    const bool isV98 = version >= 97;
+    const FormatVersion* fmt = formatForVersion(version);
     for (auto& fi : functions) {
         if (!fi.hasExceptionHandler && !fi.hasDebugInfo) continue;
 
@@ -51,24 +52,16 @@ void parseExceptionHandlers(
             pos += needed;
         }
 
-        // Per-function debug offsets. v94-96 store three uint32
-        // { debugOffset (source locations), scopeDescOffset, textifiedCalleesOffset }.
-        // v98 (Static Hermes) uses the older two-uint32 DebugOffsets
-        // { sourceLocations, lexicalData }: no scope descriptor / textified
-        // callees sections. The EH table above is always a multiple of 4 bytes,
-        // so `pos` is already aligned (the serializer's pad(4) is a no-op here).
-        if (fi.hasDebugInfo) {
-            if (isV98) {
-                if (pos + 8 <= fileSize) {
-                    std::memcpy(&fi.debugOffset, fileData + pos, 4);  // sourceLocations
-                    fi.scopeDescOffset        = 0;
-                    fi.textifiedCalleesOffset = 0;
-                }
-            } else if (pos + 12 <= fileSize) {
-                std::memcpy(&fi.debugOffset,            fileData + pos,     4);
-                std::memcpy(&fi.scopeDescOffset,        fileData + pos + 4, 4);
-                std::memcpy(&fi.textifiedCalleesOffset, fileData + pos + 8, 4);
-            }
+        // Per-function debug offsets, read by the format module: v94-96 store
+        // three uint32 { source locations, scope descriptor, textified callees },
+        // v98 the older two-uint32 form { source locations, lexical data }. The EH
+        // table above is always a multiple of 4 bytes, so `pos` is already aligned
+        // (the serializer's pad(4) is a no-op here).
+        if (fi.hasDebugInfo && pos + fmt->debugOffsetsSize() <= fileSize) {
+            const DebugOffsetsFields d = fmt->readDebugOffsets(fileData + pos);
+            fi.debugOffset            = d.debugOffset;
+            fi.scopeDescOffset        = d.scopeDescOffset;
+            fi.textifiedCalleesOffset = d.textifiedCalleesOffset;
         }
     }
 }

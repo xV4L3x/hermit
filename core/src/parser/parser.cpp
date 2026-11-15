@@ -7,6 +7,7 @@
 #include "hbc/format_v95.h"
 #include "hbc/format_v96.h"
 #include "hbc/format_v98.h"
+#include "hbc/format_version.h"
 
 #include <fcntl.h>
 #include <sys/mman.h>
@@ -476,8 +477,7 @@ uint32_t offsetOfSection(const HBCFile& f, const char* name) {
 const std::string& HBCFile::array_buffer() const {
     // v98 merges the array and object-value buffers into one literal value buffer.
     if (!impl_->arrayBuffer)
-        impl_->arrayBuffer = sliceSectionByName(
-            *this, version() >= 97 ? "literal value buffer" : "array buffer");
+        impl_->arrayBuffer = sliceSectionByName(*this, formatForVersion(version())->arrayBufferSection());
     return *impl_->arrayBuffer;
 }
 
@@ -490,8 +490,7 @@ const std::string& HBCFile::obj_key_buffer() const {
 const std::string& HBCFile::obj_value_buffer() const {
     // v98 stores object-literal values in the merged literal value buffer.
     if (!impl_->objValueBuffer)
-        impl_->objValueBuffer = sliceSectionByName(
-            *this, version() >= 97 ? "literal value buffer" : "object value buffer");
+        impl_->objValueBuffer = sliceSectionByName(*this, formatForVersion(version())->objValueBufferSection());
     return *impl_->objValueBuffer;
 }
 
@@ -574,7 +573,7 @@ std::vector<Section> HBCFile::section_map() const {
         pos += size;
     };
 
-    add("function headers",      h.functionCount       * smallFuncHeaderSize(h.version));
+    add("function headers",      h.functionCount       * formatForVersion(h.version)->funcHeaderSize());
     add("string kind table",     h.stringKindCount     * 4);
     add("identifier hash table", h.identifierCount     * 4);
     add("string table",          h.stringCount         * 4);
@@ -583,20 +582,10 @@ std::vector<Section> HBCFile::section_map() const {
     // align 1 the 0-3 padding bytes after an odd-sized string storage vanished:
     // invisible to serialize() (raw copy) but it broke Module's re-layout.
     add("string storage",        h.stringStorageSize,    4);
-    if (h.version >= 97) {
-        // v98: the array and object-value buffers are merged into one literal
-        // value buffer; a new object shape table replaces the object value
-        // buffer. The three header words are repurposed (see format_v98.h):
-        // arrayBufferSize -> literalValueBufferSize, objValueBufferSize ->
-        // objShapeTableCount (a count, not a byte size).
-        add("literal value buffer", h.arrayBufferSize,    4);
-        add("object key buffer",    h.objKeyBufferSize,   4);
-        add("object shape table",   h.objValueBufferSize * sizeof(ShapeTableEntry));
-    } else {
-        add("array buffer",          h.arrayBufferSize,      4);
-        add("object key buffer",     h.objKeyBufferSize,     4);
-        add("object value buffer",   h.objValueBufferSize,   4);
-    }
+    // The literal buffer sections (array/value buffers, plus the v98 object
+    // shape table) are version-specific; the format module lists them.
+    for (const MidSectionDesc& s : formatForVersion(h.version)->literalBufferSections(h))
+        add(s.name, s.size, s.align);
     add("bigint table",          h.bigIntCount         * sizeof(BigIntTableEntry));
     add("bigint storage",        h.bigIntStorageSize,    4);
     add("regexp table",          h.regExpCount         * sizeof(RegExpTableEntry));
