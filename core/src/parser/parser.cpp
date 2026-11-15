@@ -95,7 +95,9 @@ static const HBCFileHeader* validateHeader(const void* data, size_t size) {
     std::memcpy(&ver, static_cast<const uint8_t*>(data) + 8, sizeof(ver));
     const HBCFileHeader* hdr;
     switch (ver) {
-        case 98: hdr = reinterpret_cast<const HBCFileHeader_v98*>(data); break;
+        // v98's tail header words are shifted; the shared struct still reads the
+        // common fields (<= 0x58), and the format module reads the shifted ones.
+        case 98: hdr = reinterpret_cast<const HBCFileHeader*>(data); break;
         case 96: hdr = reinterpret_cast<const HBCFileHeader_v96*>(data); break;
         case 95: hdr = reinterpret_cast<const HBCFileHeader_v95*>(data); break;
         case 94: hdr = reinterpret_cast<const HBCFileHeader_v94*>(data); break;
@@ -178,7 +180,8 @@ const std::vector<FunctionInfo>& HBCFile::functions() const {
         for (const auto& s : section_map())
             if (s.name == "function source table") { srcTableOffset = s.offset; break; }
         parseFunctionSourceTable(raw_data(), fileSize, srcTableOffset,
-                                 header().functionSourceCount, strings(), funcs);
+                                 formatForVersion(version())->functionSourceCount(header()),
+                                 strings(), funcs);
 
         impl_->functions = std::move(funcs);
     }
@@ -416,7 +419,7 @@ std::vector<CJSModuleInfo> HBCFile::cjs_modules() const {
 
         const bool staticallyResolved = (header().options >> 1) & 1;
         impl_->cjsModules = parseCJSModuleTable(
-            raw_data(), sectionOffset, header().cjsModuleCount,
+            raw_data(), sectionOffset, formatForVersion(version())->cjsModuleCount(header()),
             staticallyResolved, strings());
     }
     return *impl_->cjsModules;
@@ -561,6 +564,8 @@ const CFGData& HBCFile::cfg(uint32_t functionIndex) const {
 // order (visitBytecodeSegmentsInOrder).
 std::vector<Section> HBCFile::section_map() const {
     const auto& h = *impl_->hdr;
+    const FormatVersion* fmt = formatForVersion(h.version);
+    const uint32_t debugOff = fmt->debugInfoOffset(h);
     std::vector<Section> sections;
 
     uint32_t pos = 0;
@@ -592,16 +597,16 @@ std::vector<Section> HBCFile::section_map() const {
     add("bigint storage",        h.bigIntStorageSize,    4);
     add("regexp table",          h.regExpCount         * sizeof(RegExpTableEntry));
     add("regexp storage",        h.regExpStorageSize,    4);
-    add("cjs module table",      h.cjsModuleCount      * 8);
-    add("function source table", h.functionSourceCount * 8);
+    add("cjs module table",      fmt->cjsModuleCount(h)      * 8);
+    add("function source table", fmt->functionSourceCount(h) * 8);
 
     // All function bodies as one block, up to debugInfoOffset. Exact
     // per-function extents come from SmallFuncHeader.bytecodeSizeInBytes.
-    if (h.debugInfoOffset > alignUp(pos, 4))
-        add("bytecode", h.debugInfoOffset - alignUp(pos, 4));
+    if (debugOff > alignUp(pos, 4))
+        add("bytecode", debugOff - alignUp(pos, 4));
 
-    if (h.debugInfoOffset > 0)
-        add("debug info", h.fileLength - 20 - h.debugInfoOffset);
+    if (debugOff > 0)
+        add("debug info", h.fileLength - 20 - debugOff);
 
     // SHA-1 of everything above the footer. The runtime doesn't verify it, but
     // the patcher recomputes it.
@@ -651,7 +656,7 @@ struct DebugLayout {
 
 // False if the section is absent or truncated.
 bool computeDebugLayout(const HBCFileHeader& h, const uint8_t* fileData, uint32_t fileSize, DebugLayout& out) {
-    uint32_t dbgOff = h.debugInfoOffset;
+    uint32_t dbgOff = formatForVersion(h.version)->debugInfoOffset(h);
     constexpr uint32_t HEADER_SIZE = 7 * 4;
     if (dbgOff == 0 || dbgOff + HEADER_SIZE > fileSize) return false;
 
@@ -686,7 +691,8 @@ std::vector<std::string> HBCFile::source_files() const {
     // Filename table: filenameCount x { offset:u32, length:u32 } into the
     // filename storage blob, right before it (see the DebugLayout comment).
     constexpr uint32_t HEADER_SIZE = 7 * 4;
-    const uint32_t tableStart = impl_->hdr->debugInfoOffset + HEADER_SIZE;
+    const uint32_t tableStart =
+        formatForVersion(impl_->hdr->version)->debugInfoOffset(*impl_->hdr) + HEADER_SIZE;
     const uint8_t* storage    = raw_data() + layout.filenameStorageStart;
 
     std::vector<std::string> result;

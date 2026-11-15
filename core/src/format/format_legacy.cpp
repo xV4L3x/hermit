@@ -56,6 +56,11 @@ public:
         return (fh.offset & 0xFFFFu) | ((fh.infoOffset & 0xFFFFu) << 16);
     }
 
+    uint32_t debugInfoOffset(const HBCFileHeader& h)     const override { return h.debugInfoOffset; }
+    uint32_t cjsModuleCount(const HBCFileHeader& h)      const override { return h.cjsModuleCount; }
+    uint32_t functionSourceCount(const HBCFileHeader& h) const override { return h.functionSourceCount; }
+    void     setDebugInfoOffset(HBCFileHeader& h, uint32_t v) const override { h.debugInfoOffset = v; }
+
     uint32_t debugOffsetsSize() const override { return 12; }
     DebugOffsetsFields readDebugOffsets(const uint8_t* p) const override {
         DebugOffsetsFields d;

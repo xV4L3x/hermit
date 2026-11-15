@@ -282,15 +282,16 @@ Module Module::from(const HBCFile& file) {
     m.bytecodeBlob_.assign(raw + blobStart, raw + blobEnd);
 
     m.oldInfoStart_       = align4(blobEnd);
-    m.oldDebugInfoOffset_ = h.debugInfoOffset;
+    const uint32_t dbgOff = fmt->debugInfoOffset(h);
+    m.oldDebugInfoOffset_ = dbgOff;
 
-    if (h.debugInfoOffset < m.oldInfoStart_ || h.debugInfoOffset + 20 > rawSize)
+    if (dbgOff < m.oldInfoStart_ || dbgOff + 20 > rawSize)
         throw std::runtime_error("Module: header.debugInfoOffset is inconsistent with the layout");
 
     // Info blob: per-function overflow FunctionHeader + EH table + debug
     // offsets, between the end of the bytecode and debugInfoOffset.
-    m.infoBlob_.assign(raw + m.oldInfoStart_, raw + h.debugInfoOffset);
-    m.debugBlob_.assign(raw + h.debugInfoOffset, raw + rawSize - 20);
+    m.infoBlob_.assign(raw + m.oldInfoStart_, raw + dbgOff);
+    m.debugBlob_.assign(raw + dbgOff, raw + rawSize - 20);
 
     // Shared bytecode groups: same origOffset.
     std::unordered_map<uint32_t, std::vector<uint32_t>> byOff;
@@ -1125,9 +1126,10 @@ std::vector<uint8_t> Module::serialize() {
         }
     }
 
-    // 8. Header fields (fileLength is set once the output is built).
+    // 8. Header fields (fileLength is set once the output is built). The
+    //    debugInfoOffset word is version-shifted; the rest keep their offsets.
     auto* hdr = reinterpret_cast<HBCFileHeader*>(header_.data());
-    hdr->debugInfoOffset     = static_cast<uint32_t>(newDbgOff);
+    fmt->setDebugInfoOffset(*hdr, static_cast<uint32_t>(newDbgOff));
     hdr->stringCount         = ss.stringCount;
     hdr->stringKindCount     = ss.kindCount;
     hdr->identifierCount     = static_cast<uint32_t>(ss.idHash.size() / 4);

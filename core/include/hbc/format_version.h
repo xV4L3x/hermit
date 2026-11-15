@@ -108,6 +108,15 @@ public:
     // resize (which rewrites inline count/key operands) is not supported.
     virtual bool objectLiteralUsesShapeTable() const = 0;
 
+    // Tail header words whose file offset is version-specific (v98 inserts a
+    // numStringSwitchImms word that shifts them by 4 bytes). The common header
+    // words (up to the literal buffers) keep their offsets and are read straight
+    // off the shared struct.
+    virtual uint32_t debugInfoOffset(const HBCFileHeader& h)     const = 0;
+    virtual uint32_t cjsModuleCount(const HBCFileHeader& h)      const = 0;
+    virtual uint32_t functionSourceCount(const HBCFileHeader& h) const = 0;
+    virtual void     setDebugInfoOffset(HBCFileHeader& h, uint32_t v) const = 0;
+
     // --- serialize ---
     // Writes small header `index` into `fhBase` and, when overflowed, the large
     // header into `info` at `largeOffset - infoStart`. Throws on field overflow.

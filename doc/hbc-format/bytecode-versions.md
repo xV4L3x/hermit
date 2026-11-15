@@ -160,11 +160,12 @@ for v in 94 95; do
 done
 ```
 
-For **98**, build from the Static Hermes branch (the version 98 lives on
-`static_h`, not `main`):
+For **98**, build from the shipped Hermes V1 tag (NOT the first v98 commit:
+Static Hermes changed the v98 layout within the version, and real RN 0.84-0.86
+bundles use the shipped tag — see [`v98-format.md`](v98-format.md)):
 
 ```bash
-git worktree add --detach /tmp/hermes98 c00cc5759   # first commit at BYTECODE_VERSION = 98
+git worktree add --detach /tmp/hermes98 hermes-v250829098.0.14   # shipped Hermes V1 (RN 0.84-0.86)
 sed -i '' 's/cmake_policy(SET CMP0026 OLD)//' /tmp/hermes98/CMakeLists.txt
 cmake -S /tmp/hermes98 -B /tmp/build98 -G Ninja -DCMAKE_BUILD_TYPE=Release \
       -DHERMES_ENABLE_TEST_SUITE=OFF -DCMAKE_POLICY_VERSION_MINIMUM=3.5

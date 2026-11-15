@@ -1,109 +1,109 @@
-# HBC v98 (Static Hermes) format
+# HBC v98 (Static Hermes / Hermes V1) format
 
-> How HBC version 98 differs from v94/95/96. Anchored to the Hermes source on the
-> `static_h` branch at commit `c00cc5759` ("Support PrLoad in bytecode"), the
-> first commit that sets `BYTECODE_VERSION = 98`.
+> How HBC version 98 differs from v94/95/96. Anchored to the Hermes source at tag
+> **`hermes-v250829098.0.14`** — the Hermes V1 that React Native 0.84-0.86 ship.
 
-## Lineage: v98 is not a successor of v96
+## "Version 98" is not one format
 
 v96 is on the facebook/hermes **mainline**; v98 is on the divergent **`static_h`**
-branch (Static Hermes, the AOT compiler that ships as Hermes V1 in React Native
-0.84+). The two lineages split in 2022 (merge-base `7a9359527`), so v96 is not an
-ancestor of v98. On `static_h` the version chain is:
+branch (Static Hermes, which ships as Hermes V1). Crucially, **Static Hermes
+changed the v98 wire format several times without bumping the version number.**
+The first v98 commit (`c00cc5759`, Aug 2024) and the shipped Hermes V1 (tag
+`hermes-v250829098.0.x`, built 2025-08) are both "version 98" but have
+different function-header bitfields, a different file header, and different
+per-function debug offsets.
 
-```
-… 90 (906b5cff3) → 97 (16b5ada82, 2024-05) → 98 (c00cc5759, 2024-08) → 99 (42235b8d9, 2026-02) → …
-```
+**hermit targets the shipped Hermes V1** (`hermes-v250829098.0.14`), i.e. what RN
+0.84-0.86 bundles actually use — not the first v98 commit. The version number
+alone does not identify the layout, so a bundle from a much older or newer
+static_h snapshot may not match; the shipped V1 is the real-world target.
 
-`97 → 98` adds only two opcodes (`GetOwnBySlotIdx` / `GetOwnBySlotIdxLong`), with
-no struct change, so v98's header/function-header/section layout equals v97's.
-The whole structural weight is the `90 → 97` rewrite. hermit therefore treats v98
-as a **second wire format**, not a version bump: per-version logic lives in a
-`FormatVersion` module (`core/src/format/format_v98.cpp`) selected at runtime by
-`formatForVersion()`, alongside the v94-96 module (`format_legacy.cpp`).
-
-To build a v98 compiler + VM, see
-[`bytecode-versions.md`](bytecode-versions.md): a `static_h` worktree at a v98
-commit, `ninja hermes`. The stock `hermes` there compiles plain JS to a runnable
-v98 `.hbc`. (Note: this build rejects ES6 `class` at runtime, so v98 test samples
-are class-free.)
+hermit treats v98 as a second wire format: its logic lives in a `FormatVersion`
+module (`core/src/format/format_v98.cpp`) selected at runtime by
+`formatForVersion()`, alongside `format_legacy.cpp` (v94/95/96). Build the v98
+compiler + VM from the tag (see [`bytecode-versions.md`](bytecode-versions.md)).
 
 ## What differs from v94/95/96
 
-### File header (`BytecodeFileHeader`) — same 128 bytes, two words repurposed
+### File header — same 128 bytes, a new word shifts the tail
 
-The header keeps its size and field offsets, but the three literal-buffer words
-change meaning:
+A `numStringSwitchImms` word is inserted after `objShapeTableCount`, shifting the
+last four words (`padding` shrinks 19 → 15 bytes):
 
-| Offset | v94-96 | v98 |
+| Offset | v94-96 | v98 (shipped) |
 |---|---|---|
 | 0x50 | `arrayBufferSize` | `literalValueBufferSize` |
-| 0x54 | `objKeyBufferSize` | `objKeyBufferSize` (same) |
-| 0x58 | `objValueBufferSize` | `objShapeTableCount` (a count of 8-byte entries) |
+| 0x54 | `objKeyBufferSize` | `objKeyBufferSize` |
+| 0x58 | `objValueBufferSize` | `objShapeTableCount` (entry count) |
+| 0x5C | `segmentID` | **`numStringSwitchImms`** (new) |
+| 0x60 | `cjsModuleCount` | `segmentID` |
+| 0x64 | `functionSourceCount` | `cjsModuleCount` |
+| 0x68 | `debugInfoOffset` | `functionSourceCount` |
+| 0x6C | `options` | `debugInfoOffset` |
 
-The array buffer and the object-value buffer are **merged** into one literal
-value buffer, and a new **object shape table** section is added. Section order:
-`… string storage → literal value buffer → object key buffer → object shape table
-→ bigint → regexp → cjs → function source → debug info`.
+The array and object-value buffers are merged into one literal value buffer, and
+an object shape table is added (as in the first v98). The **misread
+`debugInfoOffset`** (0x68 vs 0x6C) is what made `hbc_section_map` report a
+negative coverage gap on real bundles before this was fixed.
 
-### Function header — 12 bytes (was 16)
+### Function header — 12 bytes, different bitfields
 
-`FUNC_HEADER_FIELDS` at v98:
+v98's `SmallFuncHeader` is 12 bytes (as v98, not the 16 of v94-96) but its bit
+layout is entirely different and uses Hermes's `BitField` storage, so hermit
+parses it bit by bit:
 
 ```
-offset:25  paramCount:7  | bytecodeSizeInBytes:15  functionName:17  | frameSize:u8  highestReadCacheIndex:u8  highestWriteCacheIndex:u8  flags:u8
+w1 (uint32): Offset[0:25]  ParamCount[25:30]  LoopDepth[30:32]
+w2 (uint32): BytecodeSizeInBytes[0:14]  FunctionName[14:22]  NumberRegCount[22:27]  NonPtrRegCount[27:32]
+b8: FrameSize   b9: ReadCacheSize   b10: WriteCacheSize[0:6] NumCacheNewObject[6] PrivateNameCache[7]   b11: flags
 ```
 
-- **`infoOffset` (25-bit) removed** and **`environmentSize` (8-bit) removed**;
-  `frameSize` widened 7→8 bit. The `SmallFuncHeader` is 12 bytes; the overflow
-  `FunctionHeader` is 23 bytes (`frameSize` is a full `uint32` there).
-- **`FunctionHeaderFlag` gains a 2-bit `kind`** field (`Normal=0 / Generator=1 /
-  Async=2`) in the old `_reserved` bits.
-- **Locating a function's info section** (exception-handler table + debug
-  offsets) changed. There is no `infoOffset` field, so a function has an info
-  section **iff its small header is `overflowed`**: the overflow offset is packed
-  as `offset | (functionName << 16)`, the large header sits there, and the info
-  section follows it (aligned to 4). A non-overflowed function has no info
-  section (no exception handler, no debug info).
-- Per-function **debug offsets** are the older two-word form
-  `{ sourceLocations, lexicalData }` (8 bytes), not the v94-96 three-word
-  `{ source locations, scope descriptor, textified callees }` (12 bytes).
+Note `ParamCount` is 5 bits and `FunctionName` only 8 bits, so most functions in
+a real bundle overflow (name index > 255). The overflow (large) header is 37
+bytes; the overflow offset is packed as **`offset(low 24) | functionName(high
+8)`** → `getLargeHeaderOffset()`. A function has an info section (large header +
+EH table + debug offsets) iff its small header's `overflowed` flag (byte 11, bit
+5) is set; the info section follows the large header, aligned to 4.
 
-### Object literals — shape table instead of inline operands
+The flag byte is unchanged from the first v98:
+`prohibitInvoke[0:2] strictMode[2] hasExceptionHandler[3] hasDebugInfo[4] overflowed[5] kind[6:8]`.
+(The large header carries the real flags with `overflowed = 0`, so `overflowed`
+is read from the small header, never the large one.)
 
-`NewObjectWithBuffer` changed from `(dst, sizeHint, count, keyBufferIdx,
-valueBufferIdx)` to **`(dst, shapeTableIndex, valueBufferIdx)`**. The key-buffer
-offset and property count come from the shape table entry
-(`ShapeTableEntry { uint32 keyBufferOffset; uint32 numProps; }`), not from
-operands. The object value buffer is the merged literal value buffer. (Array
-literals are unchanged: `dst, sizeHint, count, bufferOffset`.)
+### Per-function debug offsets — one word
 
-This is why object-literal **resize** on v98 appends a new shape entry (new key
-offset + count) and repoints `shapeTableIndex`, rather than rewriting inline
-count/key operands.
+v98 shipped stores a single `{ sourceLocations }` (4 bytes), not the v94-96
+three-word `{ source locations, scope descriptor, textified callees }` (12
+bytes). (`lexicalData` was deleted within the v98 window.)
 
-### Opcode table — fully renumbered
+### Object literals — shape table (unchanged from the first v98)
 
-v98 has 201 opcodes (v96 has 206); every opcode byte shifts, so a v96 table
-cannot decode v98. Beyond the object-literal change above: generators/async and
-the `HERMES_RUN_WASM` block and `CallDirect*`/`CallLong`/`ConstructLong` are
-removed; `CallWithNewTarget[Long]`, `AddS`, `GetByIndex`, `PutOwnBySlotIdx[Long]`,
-`GetOwnBySlotIdx[Long]` (the v98 addition), and explicit-environment opcodes
-(`CreateFunctionEnvironment`, `CreateTopLevelEnvironment`) are added; `Put/Del/
-TryPut ById/ByVal` are split into Loose/Strict variants; `DirectEval`,
-`GetEnvironment`, `CreateEnvironment` change arity. hermit's table is generated
-from the v98 `BytecodeList.def` by `seeder/gen_opcodes.py`.
+`NewObjectWithBuffer (dst, shapeTableIndex, valueBufferIdx)`: the key-buffer
+offset and property count come from the object shape table
+(`ShapeTableEntry { uint32 keyBufferOffset; uint32 numProps; }`). Resize appends
+a new shape entry and repoints `shapeTableIndex`.
+
+### Opcode table — 219 opcodes, renumbered
+
+Generated from the shipped `BytecodeList.def` by `seeder/gen_opcodes.py`. Adds
+`StringSwitchImm` (a string `switch` with an appended case table, like
+`SwitchImm`'s jump table — hermit does not yet reconstruct that case table) and
+`GetOwnBySlotIdx`, among others, on top of the first-v98 changes.
 
 ## How hermit implements it
 
-- Opcode table: `core/src/format/opcodes_v98.cpp` (generated), dispatched by
-  `getOpcodeTable()`.
-- Layout/structs: `core/include/hbc/format_v98.h` + the `FormatVersion` module
-  `core/src/format/format_v98.cpp`, dispatched by `formatForVersion()`. The
-  parser, analysis and `Module` serializer call the module instead of branching
-  on the version.
-- Verified on v98 samples (built with the `static_h` c00cc5759 compiler): parse,
-  disassembly, CFG, decompiler, string/literal xrefs, byte-identical round-trip,
-  and the full structural patcher (instruction insert + jump/EH relocation,
-  string edits, `add_function`, literal value edits, array and object-shape
-  resize), each executed on the v98 VM.
+- `core/src/format/opcodes_v98.cpp` (generated), via `getOpcodeTable()`.
+- `core/include/hbc/format_v98.h` + `core/src/format/format_v98.cpp` (the
+  `FormatVersion` module), via `formatForVersion()`. The shifted header words are
+  read/written through the module (`debugInfoOffset()` / `cjsModuleCount()` /
+  `functionSourceCount()` / `setDebugInfoOffset()`); the function header is parsed
+  and written bit by bit.
+- Verified on v98 samples built with the shipped-tag compiler: parse, disasm,
+  CFG, decompiler, string/literal xrefs, byte-identical round-trip, the full
+  structural patcher, and `section_map` coverage, each run on the v98 VM.
+
+## Known gaps
+
+- `StringSwitchImm`'s appended case table is not reconstructed (as `SwitchImm` is
+  a special case, this one is not yet) — a function using a large string `switch`
+  disassembles its case table as stray instructions.
