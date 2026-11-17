@@ -78,7 +78,8 @@ python -c "import _libhbc; print(_libhbc.HBCFile)"
 **Homebrew** (macOS, Linuxbrew):
 
 ```bash
-brew install xV4L3x/hermit/hermit
+brew install xV4L3x/tap/hermit
+# or: brew tap xV4L3x/tap && brew install hermit
 ```
 
 **Debian / Ubuntu** — download `hermit_<version>_<arch>.deb` from a
