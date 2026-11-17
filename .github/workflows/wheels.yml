@@ -80,6 +80,8 @@ jobs:
         with: { path: dist, pattern: dist-libhbc-*, merge-multiple: true }
       - run: ls -l dist
       - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          skip-existing: true      # idempotent: a re-run won't fail on already-uploaded files
 
   publish-hermit:
     name: Publish hermit-hbc to PyPI
@@ -94,3 +96,5 @@ jobs:
         with: { path: dist, pattern: dist-hermit-hbc, merge-multiple: true }
       - run: ls -l dist
       - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          skip-existing: true      # idempotent: a re-run won't fail on already-uploaded files
