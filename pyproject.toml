@@ -49,6 +49,9 @@ sdist.exclude = [
 
 [tool.cibuildwheel]
 build = "cp310-* cp311-* cp312-* cp313-*"
+# Native 64-bit only: no 32-bit i686 (the engine uses 64-bit offsets) and no
+# emulated cross-builds.
+archs = ["auto64"]
 skip = "*-musllinux_*"
 build-frontend = "build"
 # Smoke-test every built wheel: the extension must import.
