@@ -10,6 +10,7 @@
 
 #include "hbc/format.h"
 
+#include <cstddef>
 #include <cstdint>
 #include <vector>
 

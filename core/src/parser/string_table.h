@@ -4,6 +4,7 @@
 #include "hbc/format.h"
 #include "hbc/hbc.h"
 
+#include <cstddef>
 #include <string>
 #include <vector>
 

@@ -16,6 +16,7 @@
 
 #include "hbc/hbc.h"
 
+#include <cstddef>
 #include <cstdint>
 #include <deque>
 #include <optional>
