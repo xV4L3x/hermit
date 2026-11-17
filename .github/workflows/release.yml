@@ -88,7 +88,11 @@ jobs:
           esac
           export VERSION="$version" ARCH="$arch" APPDIR="dist/hermit-$version-${{ matrix.platform }}"
           deb="dist/hermit_${version}_${arch}.deb"
-          nfpm pkg -f packaging/nfpm.yaml -p deb -t "$deb"
+          # nfpm expands env vars only in top-level scalar fields, not in
+          # contents.src globs, so render the config ourselves first.
+          command -v envsubst >/dev/null || sudo apt-get install -y gettext-base
+          envsubst '${VERSION} ${ARCH} ${APPDIR}' < packaging/nfpm.yaml > dist/nfpm.rendered.yaml
+          nfpm pkg -f dist/nfpm.rendered.yaml -p deb -t "$deb"
           if command -v sha256sum >/dev/null; then sha256sum "$deb"; else shasum -a 256 "$deb"; fi > "$deb.sha256"
           # Smoke-test the .deb in a clean container.
           docker run --rm -v "$PWD/dist:/d" ubuntu:22.04 bash -c \

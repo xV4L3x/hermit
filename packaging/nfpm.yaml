@@ -4,9 +4,12 @@
 # produces: the whole app goes under /opt/hermit and /usr/bin/hermit is a symlink
 # to it. The bundle ships its own Python, so the package has no runtime deps.
 #
-# Build it (VERSION, ARCH and APPDIR come from the environment; nfpm expands them):
+# VERSION, ARCH and APPDIR come from the environment. nfpm expands env vars only
+# in top-level scalar fields, NOT in contents.src globs, so the CI renders this
+# file with envsubst first (see .github/workflows/release.yml). To build by hand:
 #   VERSION=0.3.0 ARCH=amd64 APPDIR=dist/hermit-0.3.0-linux-x86_64 \
-#     nfpm pkg -f packaging/nfpm.yaml -p deb -t dist/hermit_0.3.0_amd64.deb
+#     envsubst '${VERSION} ${ARCH} ${APPDIR}' < packaging/nfpm.yaml > /tmp/nfpm.yaml
+#   nfpm pkg -f /tmp/nfpm.yaml -p deb -t dist/hermit_0.3.0_amd64.deb
 
 name: hermit
 arch: ${ARCH}
