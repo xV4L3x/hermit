@@ -97,3 +97,8 @@ Status legend: **[done]** shipped · **[wip]** partially implemented · **[plann
   deterministic decompiler.
 - **[planned]** `B15` validation on real shipped apps as case studies.
 - **[planned]** `B32` generate ready-to-use Frida instrumentation scripts.
+- **[planned]** `B46` submit the formula to homebrew-core once the project clears
+  notability, so `brew install hermit` works without the tap.
+- **[planned]** `B47` hosted, GPG-signed apt repository (reprepro on GitHub Pages)
+  for `apt update && apt install hermit` with automatic upgrades, instead of the
+  per-release `.deb` download.

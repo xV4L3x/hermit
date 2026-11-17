@@ -1,0 +1,30 @@
+# nfpm config for the `hermit` Debian package (https://nfpm.goreleaser.com).
+#
+# It wraps the self-contained PyInstaller bundle that packaging/build-release.sh
+# produces: the whole app goes under /opt/hermit and /usr/bin/hermit is a symlink
+# to it. The bundle ships its own Python, so the package has no runtime deps.
+#
+# Build it (VERSION, ARCH and APPDIR come from the environment; nfpm expands them):
+#   VERSION=0.3.0 ARCH=amd64 APPDIR=dist/hermit-0.3.0-linux-x86_64 \
+#     nfpm pkg -f packaging/nfpm.yaml -p deb -t dist/hermit_0.3.0_amd64.deb
+
+name: hermit
+arch: ${ARCH}
+version: ${VERSION}
+version_schema: none
+section: devel
+priority: optional
+maintainer: Valerio Pio De Nicola
+description: |
+  Hermes Reverse Engineering & Manipulation Interactive Toolkit.
+  Disassemble, decompile and structurally patch Hermes bytecode (HBC) from
+  React Native apps.
+homepage: https://github.com/xV4L3x/hermit
+license: MIT
+
+contents:
+  - src: ${APPDIR}
+    dst: /opt/hermit
+  - src: /opt/hermit/hermit
+    dst: /usr/bin/hermit
+    type: symlink

@@ -1,0 +1,55 @@
+# hermit-hbc: the interactive REPL / CLI (pure Python).
+#
+# `pipx install hermit-hbc` installs the `hermit` command. The compiled engine is
+# the separate `libhbc` distribution (repo-root pyproject.toml), declared as a
+# dependency here and kept in lockstep by version.
+#
+# The Python package `cli/` lives at the repo root; hatchling force-include pulls
+# it (and the shared LICENSE) in from three levels up at build time.
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "hermit-hbc"
+version = "0.3.0"            # lockstep with cli/_version.py + CMakeLists.txt + libhbc
+description = "Hermes Reverse Engineering & Manipulation Interactive Toolkit — disassemble, decompile and structurally patch React Native Hermes bytecode"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+authors = [{ name = "Valerio Pio De Nicola" }]
+keywords = ["hermes", "hbc", "react-native", "bytecode", "reverse-engineering", "decompiler", "disassembler"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Topic :: Security",
+    "Topic :: Software Development :: Disassemblers",
+    "Programming Language :: Python :: 3",
+]
+dependencies = [
+    "libhbc==0.3.0",         # native bindings; kept in lockstep with this version
+    "rich>=13",
+    "prompt_toolkit>=3",
+    "click>=8",
+    "Pygments>=2",
+]
+
+[project.urls]
+Homepage = "https://github.com/xV4L3x/hermit"
+Repository = "https://github.com/xV4L3x/hermit"
+
+[project.scripts]
+hermit = "cli.main:main"
+
+[tool.hatch.build.targets.wheel]
+only-include = []
+[tool.hatch.build.targets.wheel.force-include]
+"../../../cli" = "cli"
+"../../../LICENSE" = "LICENSE"
+
+[tool.hatch.build.targets.sdist]
+only-include = ["README.md"]
+[tool.hatch.build.targets.sdist.force-include]
+"../../../cli" = "cli"
+"../../../LICENSE" = "LICENSE"

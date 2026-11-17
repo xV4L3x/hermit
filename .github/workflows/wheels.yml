@@ -1,0 +1,96 @@
+name: Wheels
+
+# Builds the PyPI distributions and, on a v* tag, publishes them:
+#   libhbc      - native bindings, one wheel per platform/python (cibuildwheel) + sdist
+#   hermit-hbc  - the REPL, one universal pure-Python wheel
+# "Run workflow" from the Actions tab builds without publishing, to try the pipeline.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  libhbc-wheels:
+    name: libhbc wheels (${{ matrix.platform }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { platform: linux-x86_64,  runner: ubuntu-22.04 }
+          - { platform: linux-arm64,   runner: ubuntu-22.04-arm }
+          - { platform: macos-arm64,   runner: macos-15 }
+          - { platform: macos-x86_64,  runner: macos-15-intel }
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build wheels
+        uses: pypa/cibuildwheel@v2.21.3
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-libhbc-${{ matrix.platform }}
+          path: wheelhouse/*.whl
+          if-no-files-found: error
+
+  libhbc-sdist:
+    name: libhbc sdist
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - run: pipx run build --sdist
+      - name: Guard against private files in the sdist
+        run: |
+          if tar -tzf dist/libhbc-*.tar.gz | grep -qi 'CLAUDE'; then
+            echo "::error::CLAUDE*.md leaked into the libhbc sdist"; exit 1
+          fi
+      - uses: actions/upload-artifact@v4
+        with: { name: dist-libhbc-sdist, path: dist/*.tar.gz, if-no-files-found: error }
+
+  hermit-wheel:
+    name: hermit-hbc wheel
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      # Pure-Python universal wheel, built straight from source (its sources live
+      # at the repo root, reached via force-include, so there is no self-contained
+      # sdist - the wheel installs on every platform anyway).
+      - run: pipx run build --wheel packaging/pypi/hermit --outdir dist
+      - uses: actions/upload-artifact@v4
+        with: { name: dist-hermit-hbc, path: dist/*.whl, if-no-files-found: error }
+
+  # Two publish jobs, one per project. PyPI requires a distinct trusted-publisher
+  # config per project, so each uses its own GitHub environment (pypi / pypi-hermit)
+  # and uploads only its own distributions.
+  publish-libhbc:
+    name: Publish libhbc to PyPI
+    if: github.ref_type == 'tag'
+    needs: [libhbc-wheels, libhbc-sdist]
+    runs-on: ubuntu-22.04
+    environment: pypi
+    permissions:
+      id-token: write          # OIDC trusted publishing
+    steps:
+      - uses: actions/download-artifact@v4
+        with: { path: dist, pattern: dist-libhbc-*, merge-multiple: true }
+      - run: ls -l dist
+      - uses: pypa/gh-action-pypi-publish@release/v1
+
+  publish-hermit:
+    name: Publish hermit-hbc to PyPI
+    if: github.ref_type == 'tag'
+    needs: [hermit-wheel]
+    runs-on: ubuntu-22.04
+    environment: pypi-hermit
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with: { path: dist, pattern: dist-hermit-hbc, merge-multiple: true }
+      - run: ls -l dist
+      - uses: pypa/gh-action-pypi-publish@release/v1

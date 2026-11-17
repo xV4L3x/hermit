@@ -20,12 +20,11 @@ file round-trips byte for byte.
 
 - [Features](#features)
 - [Supported HBC versions](#supported-hbc-versions)
-- [Prebuilt binaries](#prebuilt-binaries)
-- [Build](#build)
+- [Install](#install)
+- [Build from source](#build-from-source)
 - [Getting an `.hbc` file](#getting-an-hbc-file)
 - [Using the REPL](#using-the-repl)
 - [Editing and patching](#editing-and-patching)
-- [Command-line tools](#command-line-tools)
 - [Python API](#python-api)
 - [Tests](#tests)
 - [Project layout](#project-layout)
@@ -58,30 +57,53 @@ Per-version differences are handled by a `FormatVersion` module selected at
 runtime (like the opcode tables), not by inline version branches. Format notes
 are in [`doc/hbc-format/`](doc/hbc-format/).
 
-## Prebuilt binaries
+## Install
 
-Each [release](https://github.com/xV4L3x/hermit/releases) has archives for
-macOS and Linux, on arm64 and x86_64. No Python or compiler is needed:
-
-| Archive | Content |
-|---|---|
-| `hermit-<version>-<platform>.tar.gz` | The interactive REPL: `./hermit file.hbc`. |
-| `hermit-tools-<version>-<platform>.tar.gz` | The standalone `hbc_*` command-line tools. |
-| `SHA256SUMS` | Checksums: `shasum -a 256 -c SHA256SUMS`. |
+The quickest way, on macOS or Linux, any architecture:
 
 ```bash
-tar -xzf hermit-0.1.0-macos-arm64.tar.gz
-./hermit-0.1.0-macos-arm64/hermit --version
+pipx install hermit-hbc        # isolated; recommended
+# or:  pip install hermit-hbc
+hermit app.hbc
 ```
 
-The macOS binaries are not signed. After downloading, clear the quarantine flag
-once: `xattr -dr com.apple.quarantine hermit-0.1.0-macos-arm64`. The Linux builds
-need glibc 2.35 or newer. The `cfg` command still needs `graph-easy` installed.
+This pulls the compiled engine (`libhbc`) as a dependency. To use just the
+native bindings, without the REPL:
 
-Releases are produced by `.github/workflows/release.yml` when a `v*` tag is
-pushed, using `packaging/build-release.sh`, which you can also run locally.
+```bash
+pip install libhbc
+python -c "import _libhbc; print(_libhbc.HBCFile)"
+```
 
-## Build
+**Homebrew** (macOS, Linuxbrew):
+
+```bash
+brew install xV4L3x/hermit/hermit
+```
+
+**Debian / Ubuntu** — download `hermit_<version>_<arch>.deb` from a
+[release](https://github.com/xV4L3x/hermit/releases) and:
+
+```bash
+sudo apt install ./hermit_0.3.0_amd64.deb
+```
+
+**No package manager** — each release also has a self-contained
+`hermit-<version>-<platform>.tar.gz` for macOS and Linux (arm64 and x86_64),
+needing no Python or compiler:
+
+```bash
+tar -xzf hermit-0.3.0-macos-arm64.tar.gz
+./hermit-0.3.0-macos-arm64/hermit --version
+```
+
+The macOS archive is not signed; clear the quarantine flag once with
+`xattr -dr com.apple.quarantine hermit-0.3.0-macos-arm64`. The Linux archive and
+`.deb` need glibc 2.35 or newer. The `cfg` command needs `graph-easy` installed
+(any install method). Releases are produced by `.github/workflows/release.yml`
+and `.github/workflows/wheels.yml` on a `v*` tag.
+
+## Build from source
 
 ### Requirements
 
@@ -102,17 +124,16 @@ cmake --build build -j
 ```
 
 This builds the `libhbc` static library, the Python module `_libhbc` (in
-`build/bindings/`), the command-line tools (in `build/tools/`) and the unit
-tests. The REPL only needs the Python module:
+`build/bindings/`) and the unit tests. The REPL only needs the Python module:
 
 ```bash
 cmake --build build --target _libhbc
 ```
 
-The tools and the tests can be left out of a build, for example for a release:
+The tests can be left out of a build, for example for a release:
 
 ```bash
-cmake -B build -DCMAKE_BUILD_TYPE=Release -DHERMIT_BUILD_TOOLS=OFF -DHERMIT_BUILD_TESTS=OFF
+cmake -B build -DCMAKE_BUILD_TYPE=Release -DHERMIT_BUILD_TESTS=OFF
 ```
 
 Rebuild with the same command after every change to `core/` or `bindings/`.
@@ -289,25 +310,6 @@ of the same version:
 hermes isPremium_patched.hbc
 ```
 
-## Command-line tools
-
-Small standalone tools are built in `build/tools/`:
-
-| Tool | Purpose |
-|---|---|
-| `hbc_dump <file>` | Every header field. |
-| `hbc_section_map <file>` | Offset, size and alignment of every section, with a coverage check. |
-| `hbc_functions <file>` | The function table. |
-| `hbc_strings <file>` | Strings with their kind. |
-| `hbc_disasm <file> [func:N] [-o out.txt]` | Disassembly of all functions or one. |
-| `hbc_roundtrip <in> <out>` | Parse and re-serialize; compare with `cmp`. |
-| `hbc_patch <in> --offset <hex> --value <hex> -o <out>` | Overwrite one byte (does not fix the SHA-1 footer). |
-
-Helper scripts in `tools/`: `inspect_real_bundle.py <bundle.hbc>` summarizes the
-structural features of a bundle (shared bodies, overflow functions, exception
-handlers, UTF-16 strings), and `gen_opcode_table_typ.py` generates the opcode
-table of the thesis.
-
 ## Python API
 
 The REPL is a thin layer over the `_libhbc` module, which you can use directly.
@@ -370,8 +372,7 @@ see [`doc/hbc-format/bytecode-versions.md`](doc/hbc-format/bytecode-versions.md)
 | `core/` | C++ library `libhbc`: parser, disassembler, CFG, analysis, decompiler, patcher. Public API in `core/include/hbc/hbc.h`. |
 | `bindings/` | pybind11 module `_libhbc`. |
 | `cli/` | Python REPL (`repl.py`), project state (`project.py`), output formatting, and the editors in `editor/`. |
-| `tools/` | Standalone C++ command-line tools and helper scripts. |
-| `packaging/` | Release build: PyInstaller entry point and `build-release.sh`. |
+| `packaging/` | Distribution: PyPI (`pyproject.toml` + `packaging/pypi/`), Homebrew formula, `nfpm` Debian config, PyInstaller `build-release.sh`. |
 | `seeder/` | Corpus generation: samples compiled with the Hermes compiler. |
 | `tests/` | Catch2 unit tests (`unit/`) and pytest integration tests (`integration/`). |
 | `doc/` | HBC format notes. |

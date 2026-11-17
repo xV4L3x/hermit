@@ -37,12 +37,19 @@ jobs:
         run: |
           if [[ "$GITHUB_REF_TYPE" == "tag" ]]; then
             version="${GITHUB_REF_NAME#v}"
+            # Every place the version is written must agree with the tag.
             declared="$(python -c 'import runpy; print(runpy.run_path("cli/_version.py")["__version__"])')"
             cmake_version="$(sed -n 's/^project(hermit VERSION \([0-9.]*\).*/\1/p' CMakeLists.txt)"
-            if [[ "$declared" != "$version" || "$cmake_version" != "$version" ]]; then
-              echo "::error::tag v$version does not match cli/_version.py ($declared) and CMakeLists.txt ($cmake_version)"
-              exit 1
-            fi
+            libhbc_version="$(sed -n 's/^version = "\([0-9.]*\)".*/\1/p' pyproject.toml)"
+            hermit_version="$(sed -n 's/^version = "\([0-9.]*\)".*/\1/p' packaging/pypi/hermit/pyproject.toml)"
+            libhbc_pin="$(sed -n 's/.*"libhbc==\([0-9.]*\)".*/\1/p' packaging/pypi/hermit/pyproject.toml)"
+            for pair in "cli/_version.py:$declared" "CMakeLists.txt:$cmake_version" \
+                        "pyproject.toml:$libhbc_version" "hermit/pyproject.toml:$hermit_version" \
+                        "libhbc== pin:$libhbc_pin"; do
+              if [[ "${pair#*:}" != "$version" ]]; then
+                echo "::error::tag v$version disagrees with ${pair%%:*} (${pair#*:})"; exit 1
+              fi
+            done
           else
             version="dev-${GITHUB_SHA::7}"
           fi
@@ -61,21 +68,38 @@ jobs:
         run: |
           set -o pipefail
           app="dist/hermit-${{ steps.version.outputs.version }}-${{ matrix.platform }}"
-          tools="dist/hermit-tools-${{ steps.version.outputs.version }}-${{ matrix.platform }}"
-          # Test the archives, not the build tree.
-          mkdir smoke && tar -xzf "$app.tar.gz" -C smoke && tar -xzf "$tools.tar.gz" -C smoke
+          # Test the archive, not the build tree.
+          mkdir smoke && tar -xzf "$app.tar.gz" -C smoke
           smoke/hermit-*-${{ matrix.platform }}/hermit --version
           printf 'info\nexit\n' | smoke/hermit-*-${{ matrix.platform }}/hermit tests/fixtures/hello.hbc | tee repl.out
           grep -q "HBC v96" repl.out
-          smoke/hermit-tools-*/hbc_dump tests/fixtures/hello.hbc | grep -q "Version:.*96"
-          smoke/hermit-tools-*/hbc_roundtrip tests/fixtures/hello.hbc smoke/out.hbc
-          cmp tests/fixtures/hello.hbc smoke/out.hbc
+
+      - name: Debian package
+        if: startsWith(matrix.platform, 'linux')
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo 'deb [trusted=yes] https://repo.goreleaser.com/apt/ /' | sudo tee /etc/apt/sources.list.d/goreleaser.list
+          sudo apt-get update && sudo apt-get install -y nfpm
+          version="${{ steps.version.outputs.version }}"
+          case "${{ matrix.platform }}" in
+            linux-x86_64) arch=amd64 ;;
+            linux-arm64)  arch=arm64 ;;
+          esac
+          export VERSION="$version" ARCH="$arch" APPDIR="dist/hermit-$version-${{ matrix.platform }}"
+          deb="dist/hermit_${version}_${arch}.deb"
+          nfpm pkg -f packaging/nfpm.yaml -p deb -t "$deb"
+          if command -v sha256sum >/dev/null; then sha256sum "$deb"; else shasum -a 256 "$deb"; fi > "$deb.sha256"
+          # Smoke-test the .deb in a clean container.
+          docker run --rm -v "$PWD/dist:/d" ubuntu:22.04 bash -c \
+            "apt-get update -qq && apt-get install -y /d/$(basename "$deb") && hermit --version"
 
       - uses: actions/upload-artifact@v4
         with:
           name: hermit-${{ matrix.platform }}
           path: |
             dist/*.tar.gz
+            dist/*.deb
             dist/*.sha256
           if-no-files-found: error
 
@@ -103,8 +127,12 @@ jobs:
           cat > notes.md <<'NOTES'
           Prebuilt `hermit` for macOS and Linux (arm64 and x86_64).
 
+          Easiest install: `pipx install hermit-hbc` (any platform), `brew install xV4L3x/hermit/hermit`
+          (macOS/Linuxbrew), or on Debian/Ubuntu `sudo apt install ./hermit_<version>_<arch>.deb`.
+          The archives below are the no-package-manager fallback.
+
           - `hermit-<version>-<platform>.tar.gz`: the interactive REPL. Unpack it and run `./hermit file.hbc`.
-          - `hermit-tools-<version>-<platform>.tar.gz`: the standalone `hbc_*` command-line tools.
+          - `hermit_<version>_<arch>.deb`: Debian/Ubuntu package (installs `/usr/bin/hermit`).
           - `SHA256SUMS`: checksums of every archive (`shasum -a 256 -c SHA256SUMS`).
 
           On macOS the binaries are not signed: after downloading, run

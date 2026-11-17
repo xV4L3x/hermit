@@ -1,0 +1,62 @@
+# libhbc: the native Hermes-bytecode engine as a Python extension (_libhbc).
+#
+# `pip install libhbc` gets just the compiled bindings. The interactive `hermit`
+# REPL is the separate `hermit-hbc` distribution (packaging/pypi/hermit/), which
+# depends on this.
+#
+# scikit-build-core drives this repo's CMakeLists and, because it defines SKBUILD,
+# triggers the install() rules in bindings/CMakeLists.txt that place _libhbc and
+# its stub at the wheel root (importable as the top-level `_libhbc`).
+[build-system]
+requires = ["scikit-build-core>=0.10", "pybind11>=2.13"]
+build-backend = "scikit_build_core.build"
+
+[project]
+name = "libhbc"
+version = "0.3.0"             # kept in lockstep with cli/_version.py + CMakeLists.txt
+description = "Hermes bytecode (HBC) parser, disassembler, decompiler and structural patcher — native bindings"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Valerio Pio De Nicola" }]
+keywords = ["hermes", "hbc", "react-native", "bytecode", "reverse-engineering"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Topic :: Security",
+    "Topic :: Software Development :: Disassemblers",
+    "Programming Language :: C++",
+    "Programming Language :: Python :: 3",
+]
+
+[project.urls]
+Homepage = "https://github.com/xV4L3x/hermit"
+Repository = "https://github.com/xV4L3x/hermit"
+
+[tool.scikit-build]
+cmake.version = ">=3.20"
+cmake.args = ["-DHERMIT_BUILD_TESTS=OFF"]
+wheel.packages = []           # ship only the extension, no Python package
+# The sdist must carry the C++ source so `pip install libhbc` can build from it,
+# but nothing else - in particular never the private CLAUDE*.md dev notes.
+sdist.include = ["core/**", "bindings/**"]
+sdist.exclude = [
+    "cli/**", "tests/**", "seeder/**", "doc/**", "references/**",
+    "packaging/**", "dist/**", "build/**", ".github/**",
+    "CLAUDE.md", "CLAUDE.local.md", ".gitignore", "ROADMAP.md", "requirements.txt",
+]
+
+[tool.cibuildwheel]
+build = "cp310-* cp311-* cp312-* cp313-*"
+skip = "*-musllinux_*"
+build-frontend = "build"
+# Smoke-test every built wheel: the extension must import.
+test-command = "python -c \"import _libhbc; print(_libhbc.__name__)\""
+
+[tool.cibuildwheel.linux]
+manylinux-x86_64-image = "manylinux_2_28"
+manylinux-aarch64-image = "manylinux_2_28"
+
+[tool.cibuildwheel.macos]
+environment = { MACOSX_DEPLOYMENT_TARGET = "11.0" }
