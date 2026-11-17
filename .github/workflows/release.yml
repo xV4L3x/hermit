@@ -51,7 +51,10 @@ jobs:
               fi
             done
           else
-            version="dev-${GITHUB_SHA::7}"
+            # Dispatch (dry run): a Debian version must start with a digit, so
+            # base it on the declared version with a ~dev pre-release suffix.
+            declared="$(python -c 'import runpy; print(runpy.run_path("cli/_version.py")["__version__"])')"
+            version="${declared}~dev.${GITHUB_SHA::7}"
           fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
