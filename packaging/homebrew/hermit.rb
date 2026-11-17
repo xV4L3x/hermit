@@ -31,7 +31,7 @@
 class Hermit < Formula
   include Language::Python::Virtualenv
 
-  desc "Hermes Reverse Engineering & Manipulation Interactive Toolkit for React Native HBC"
+  desc "Reverse-engineer and patch Hermes bytecode from React Native apps"
   homepage "https://github.com/xV4L3x/hermit"
   url "https://github.com/xV4L3x/hermit/archive/refs/tags/v0.3.0.tar.gz"
   sha256 "5a39c36c7a0bea97d689f342fdfe70448d344c13fcbba405ad9715f8eb2a08b1"
@@ -58,7 +58,7 @@ class Hermit < Formula
     sha256 "bb413d29f5eea38f31dd4754dd7377d4465116fb207585f97bf925588687c1ba"
   end
 
-  resource "prompt_toolkit" do
+  resource "prompt-toolkit" do
     url "https://files.pythonhosted.org/packages/7d/ea/39b988c938f75cb75d7045b5c69f8bfed47ee2152c8837fb403de29d6fb8/prompt_toolkit-3.0.53.tar.gz"
     sha256 "9ec8a0ad96d5c56148b3f914aa79c1564c3fde5d2e6b876e7bc327e353cf8fa6"
   end
@@ -80,8 +80,7 @@ class Hermit < Formula
   # <<< END generated resources <<<
 
   def install
-    python = "python3.13"
-    venv = virtualenv_create(libexec, python)
+    venv = virtualenv_create(libexec, "python3.13")
 
     # 1. Pure-Python runtime dependencies (the generated resource blocks).
     venv.pip_install resources
@@ -94,7 +93,7 @@ class Hermit < Formula
            "-DPython3_EXECUTABLE=#{libexec}/bin/python"
     system "cmake", "--build", "build", "--target", "_libhbc"
 
-    sitep = libexec/"lib/#{python}/site-packages"
+    sitep = libexec/Language::Python.site_packages(libexec/"bin/python")
     sitep.install Dir["build/bindings/_libhbc*.so"]
     sitep.install "bindings/_libhbc.pyi", "bindings/py.typed"
 
