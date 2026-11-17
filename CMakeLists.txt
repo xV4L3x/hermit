@@ -6,7 +6,9 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 # Dependencies
-find_package(Python3 COMPONENTS Interpreter Development REQUIRED)
+# Development.Module (not the full Development) so manylinux wheels build: they
+# ship the module headers/libs but not the embed library (Development.Embed).
+find_package(Python3 COMPONENTS Interpreter Development.Module REQUIRED)
 
 # pybind11: prefer one already provided (pip/Homebrew/system) so a sandboxed
 # build with no network - Homebrew's clean room, cibuildwheel's isolated build
