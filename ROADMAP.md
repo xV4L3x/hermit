@@ -45,6 +45,13 @@ Status legend: **[done]** shipped · **[wip]** partially implemented · **[plann
 
 ## Decompiler
 
+- **[done]** `B48` general natural-loop reconstruction from CFG back-edges:
+  `while`/`for`/`do-while` with the test on top or at the latch, plus
+  `break`/`continue` and nesting. Previously only self-loops and top-test
+  `while` were structured; the rest fell into `// unstructured region` with raw
+  `/* Jmp* */`. Complementary to `B23`, which adds the `for (x in/of y)` sugar on
+  top of this skeleton. Remaining: labeled, multi-level `break`/`continue` to
+  outer loops.
 - **[planned]** `B21` reconstruct structured `switch` from `SwitchImm` (currently a flat dump).
 - **[planned]** `B23` iteration protocol for generators and `for-in`/`for-of`
   (CFG resume edges exist; the decompiler is still resume-free).

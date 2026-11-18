@@ -508,10 +508,78 @@ std::string conditionText(const Instruction& instr, const DecompileContext& ctx)
     return "/* " + mn + " */true";
 }
 
+// Logical negation of a condition string, unwrapping a single `!(...)` layer so
+// repeated negation doesn't pile up parentheses.
+std::string negateCond(const std::string& c) {
+    if (c.size() > 3 && c.compare(0, 2, "!(") == 0 && c.back() == ')')
+        return c.substr(2, c.size() - 3);
+    return "!(" + c + ")";
+}
+
+// Drops a redundant `continue;` left as the very last statement of a loop body
+// (the back-edge at the tail of the body is implicit). Mid-body `continue;`
+// statements, which do skip code, are kept.
+void stripTrailingContinue(std::string& body) {
+    size_t end = body.find_last_not_of(" \t\n");
+    if (end == std::string::npos) return;
+    size_t nl = body.rfind('\n', end);
+    size_t lineStart = (nl == std::string::npos) ? 0 : nl + 1;
+    size_t firstCh = body.find_first_not_of(" \t", lineStart);
+    if (firstCh != std::string::npos &&
+        body.compare(firstCh, end - firstCh + 1, "continue;") == 0)
+        body.erase(lineStart);
+}
+
 uint32_t findBlockAtOffset(const CFGData& cfg, uint32_t offset) {
     for (const auto& bb : cfg.blocks)
         if (bb.startOffset == offset) return bb.id;
     return NO_BLOCK;
+}
+
+// Block a conditional/unconditional jump transfers to (operand 0 is the Addr8/
+// Addr32 target, relative to the jump's own offset - same convention as
+// cfg.cpp). NO_BLOCK if the block doesn't end in a jump or the target isn't a
+// block start. Used to recover a back-edge's original orientation, which the
+// CFG discards (it rewrites the CondTaken edge to BackEdge, see cfg.cpp).
+uint32_t jumpTargetBlock(const CFGData& cfg, const BasicBlock& bb) {
+    if (bb.instructions.empty()) return NO_BLOCK;
+    const Instruction& last = bb.instructions.back();
+    if (!isBranchMnemonic(last.mnemonic) || last.operands.empty()) return NO_BLOCK;
+    const uint32_t target =
+        static_cast<uint32_t>(static_cast<int32_t>(last.offset) + last.operands[0].i32);
+    return findBlockAtOffset(cfg, target);
+}
+
+// Blocks of the natural loop of the back-edge(s) into `headerId`: the header
+// plus every block that can reach a latch (a predecessor of the header via a
+// BackEdge) without passing through the header. Standard predecessor-closure
+// algorithm, linear in the loop size. Empty if the header has no back-edge.
+std::vector<bool> naturalLoop(const CFGData& cfg, uint32_t headerId) {
+    std::vector<bool> inLoop(cfg.blocks.size(), false);
+    if (headerId >= cfg.blocks.size()) return inLoop;
+
+    std::vector<uint32_t> work;
+    for (uint32_t p : cfg.blocks[headerId].predecessors) {
+        if (p >= cfg.blocks.size()) continue;
+        for (const auto& e : cfg.blocks[p].successors)
+            if (e.kind == EdgeKind::BackEdge && e.targetId == headerId) {
+                if (!inLoop[p]) { inLoop[p] = true; work.push_back(p); }
+                break;
+            }
+    }
+    if (work.empty()) return {};  // not actually a loop header
+
+    inLoop[headerId] = true;  // header is in the loop; stops the back-walk
+    while (!work.empty()) {
+        uint32_t b = work.back();
+        work.pop_back();
+        for (uint32_t p : cfg.blocks[b].predecessors)
+            if (p < cfg.blocks.size() && !inLoop[p]) {
+                inLoop[p] = true;
+                work.push_back(p);
+            }
+    }
+    return inLoop;
 }
 
 // Merges the handlers sharing a target into one [min(start), max(end)) region.
@@ -593,9 +661,22 @@ public:
     // skipTryCheckOnFirst: don't let the first block open a try again. Set by
     // the recursion over a try's own body, which restarts from the block that
     // opened it and would otherwise recognize it forever.
+    // skipLoopCheckOnFirst: don't let the first block re-enter emitLoop. Set by
+    // the recursion over a loop's own body, which restarts from the loop header.
+    // Either flag also bypasses the visited guard on the first block (the caller
+    // has already marked it visited).
     std::string emitRange(uint32_t startId, uint32_t stopId, int indent,
-                          bool skipTryCheckOnFirst = false)
+                          bool skipTryCheckOnFirst = false,
+                          bool skipLoopCheckOnFirst = false)
     {
+        // Safety net against a pathological / irreducible CFG driving the
+        // mutual recursion (emitRange / emitLoop / emitTry / if-else) past the
+        // stack: degrade to a comment instead of crashing. Well above any real
+        // nesting depth seen in shipped bundles.
+        struct Pop { int& d; ~Pop() { --d; } } _pop{depth_};
+        if (++depth_ > 1500)
+            return indentStr(indent) + "// decompiler: nesting limit reached, region left unstructured\n";
+
         std::string out;
         std::string ind = indentStr(indent);
         uint32_t cur = startId;
@@ -604,15 +685,16 @@ public:
         for (;;) {
             if (cur == NO_BLOCK || cur == stopId || cur >= cfg_.blocks.size()) break;
 
-            // The first block of a try-body recursion is already marked
+            const bool isFirst = firstIteration;
+            // The first block of a try/loop-body recursion is already marked
             // visited by the caller: bypass the guard for that iteration only.
-            const bool skipFirstChecks = firstIteration && skipTryCheckOnFirst;
-            if (!skipFirstChecks && visited_[cur]) break;
+            if (!(isFirst && (skipTryCheckOnFirst || skipLoopCheckOnFirst)) && visited_[cur])
+                break;
             firstIteration = false;
 
             const BasicBlock& bb = cfg_.blocks[cur];
 
-            if (!skipFirstChecks) {
+            if (!(isFirst && skipTryCheckOnFirst)) {
                 const int ehIdx = findOpeningHandler(bb);
                 if (ehIdx >= 0) {
                     out += emitTry(cur, static_cast<size_t>(ehIdx), indent, cur);
@@ -639,8 +721,21 @@ public:
 
             const CondEdges ce = condEdges(bb);
 
-            // while: loop header with the test on top, body between CondTaken and the back-edge.
-            if (bb.isLoopHeader) {
+            // Loop header: reconstruct a natural loop (while / do-while / for,
+            // test on top or at the latch, with break/continue). Falls back to
+            // the old approximation when the shape isn't recognized. Skipped on
+            // the first block of a loop-body recursion, which restarts from the
+            // header and would otherwise re-enter emitLoop forever.
+            if (bb.isLoopHeader && !(isFirst && skipLoopCheckOnFirst)) {
+                std::string loopOut;
+                uint32_t loopNext = NO_BLOCK;
+                if (emitLoop(cur, indent, loopOut, loopNext)) {
+                    out += loopOut;
+                    cur = loopNext;
+                    continue;
+                }
+                // Top-test shape only (unconditional/irregular back-edge handled
+                // by the final dump).
                 if (ce.taken && ce.fallthru && !bb.instructions.empty()) {
                     out += emitBlock(bb, indent, /*skipLastIfBranch=*/true);
                     out += ind + "while (" + conditionText(bb.instructions.back(), ctx_) + ") {\n";
@@ -649,12 +744,34 @@ public:
                     cur = ce.fallthru->targetId;
                     continue;
                 }
-                // Unrecognized shape (e.g. unconditional back-edge): the rest of
-                // the body is picked up by structureCFG()'s final dump.
                 out += emitBlock(bb, indent, false);
                 out += ind + "while (true) { /* body not fully structured, see below */ }\n";
                 cur = NO_BLOCK;
                 continue;
+            }
+
+            // break / continue: a block inside a loop whose terminator jumps to
+            // the innermost loop's continue target (the test: the header of a
+            // top-test while, the latch of a do-while) or its exit (break). The
+            // CFG rewrote the back-edge's CondTaken label to BackEdge, so the
+            // jump's orientation is recovered from the instruction (jumpTargetBlock).
+            if (!loopStack_.empty() && !bb.instructions.empty() &&
+                isBranchMnemonic(bb.instructions.back().mnemonic)) {
+                const LoopCtx& L = loopStack_.back();
+                const Instruction& last = bb.instructions.back();
+                const uint32_t jt = jumpTargetBlock(cfg_, bb);
+                if (jt != NO_BLOCK && (jt == L.continueTarget || jt == L.exit)) {
+                    const char* kw = (jt == L.continueTarget) ? "continue" : "break";
+                    out += emitBlock(bb, indent, /*skipLastIfBranch=*/true);
+                    if (last.operands.size() >= 2) {  // conditional jump: if (cond) kw;
+                        out += ind + "if (" + conditionText(last, ctx_) + ") " + kw + ";\n";
+                        cur = findBlockAtOffset(cfg_, bb.endOffset);  // fall-through side
+                    } else {                          // unconditional jump
+                        out += ind + kw + ";\n";
+                        cur = NO_BLOCK;
+                    }
+                    continue;
+                }
             }
 
             // Terminal block (Ret/Throw). A block inside a try always has an
@@ -714,6 +831,90 @@ public:
     }
 
 private:
+    // Index of the handler whose try range starts inside `bb` (by containment,
+    // Reconstructs a natural loop whose header is `headerId` (already marked
+    // visited by the caller). Handles the test on top (while/for) and at the
+    // latch (do-while, and for/while whose body is entered by fall-through).
+    // Writes the structured text to `out`, sets `next` to the block where flow
+    // resumes after the loop, and returns true. Returns false (out untouched)
+    // for shapes it can't structure, so the caller falls back without regression.
+    bool emitLoop(uint32_t headerId, int indent, std::string& out, uint32_t& next) {
+        const std::vector<bool> inLoop = naturalLoop(cfg_, headerId);
+        if (inLoop.empty()) return false;
+        const BasicBlock& header = cfg_.blocks[headerId];
+        const std::string ind = indentStr(indent);
+
+        // ---- Top-test (while/for): the header tests and one edge leaves L. ----
+        const CondEdges hce = condEdges(header);
+        if (hce.taken && hce.fallthru && !header.instructions.empty()) {
+            const bool takenIn = inLoop[hce.taken->targetId];
+            const bool ftIn    = inLoop[hce.fallthru->targetId];
+            if (takenIn != ftIn) {  // exactly one branch stays in the loop
+                const uint32_t bodyId = takenIn ? hce.taken->targetId : hce.fallthru->targetId;
+                const uint32_t exitId = takenIn ? hce.fallthru->targetId : hce.taken->targetId;
+                if (bodyId != headerId) {
+                    std::string cond = conditionText(header.instructions.back(), ctx_);
+                    if (!takenIn) cond = negateCond(cond);  // loop while we ENTER the body
+                    out += emitBlock(header, indent, /*skipLastIfBranch=*/true);
+                    out += ind + "while (" + cond + ") {\n";
+                    loopStack_.push_back({headerId, exitId});
+                    std::string body = emitRange(bodyId, headerId, indent + 1);
+                    loopStack_.pop_back();
+                    stripTrailingContinue(body);
+                    out += body;
+                    out += ind + "}\n";
+                    next = exitId;
+                    return true;
+                }
+            }
+        }
+
+        // ---- Bottom-test (do-while / fall-through for/while): single latch. ----
+        uint32_t latchId = NO_BLOCK;
+        int latchCount = 0;
+        for (uint32_t p : header.predecessors)
+            for (const auto& e : cfg_.blocks[p].successors)
+                if (e.kind == EdgeKind::BackEdge && e.targetId == headerId) {
+                    latchId = p;
+                    latchCount++;
+                    break;
+                }
+        if (latchCount == 1 && latchId != NO_BLOCK && latchId != headerId) {
+            const BasicBlock& latch = cfg_.blocks[latchId];
+            const CondEdges lce = condEdges(latch);  // CondTaken was rewritten to BackEdge
+            if (lce.fallthru && !latch.instructions.empty() &&
+                isBranchMnemonic(latch.instructions.back().mnemonic) &&
+                latch.instructions.back().operands.size() >= 2) {
+                const uint32_t jt     = jumpTargetBlock(cfg_, latch);  // the back-edge target
+                const uint32_t exitId = lce.fallthru->targetId;
+                if (!inLoop[exitId]) {
+                    std::string cond = conditionText(latch.instructions.back(), ctx_);
+                    if (jt != headerId) cond = negateCond(cond);  // true == repeat
+                    out += ind + "do {\n";
+                    // No continue target: see LoopCtx. Only break (exit) is labeled.
+                    loopStack_.push_back({NO_BLOCK, exitId});
+                    // The body restarts from the header: skip BOTH the loop and
+                    // the try check on that first block. When the header opens a
+                    // try, emitRange reached it via emitTry first (try is checked
+                    // before the loop), so the try is already open here; re-opening
+                    // it would recurse emitTry<->emitLoop forever.
+                    std::string body = emitRange(headerId, latchId, indent + 1,
+                                                 /*skipTryCheckOnFirst=*/true,
+                                                 /*skipLoopCheckOnFirst=*/true);
+                    body += emitBlock(latch, indent + 1, /*skipLastIfBranch=*/true);
+                    loopStack_.pop_back();
+                    visited_[latchId] = true;
+                    stripTrailingContinue(body);
+                    out += body;
+                    out += ind + "} while (" + cond + ");\n";
+                    next = exitId;
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
     // Index of the handler whose try range starts inside `bb` (by containment,
     // see mergeHandlersByTarget), or -1.
     int findOpeningHandler(const BasicBlock& bb) const {
@@ -781,11 +982,22 @@ private:
         return out;
     }
 
+    // Innermost-first stack of the loops currently being emitted, so a jump to a
+    // loop's continue target / exit becomes continue / break (see emitRange).
+    // continueTarget is the block a JS `continue` resumes at, the header of a
+    // top-test while (the condition). It is NO_BLOCK for a do-while: `continue`
+    // there resumes at the test, but a Hermes `for` keeps its update step in the
+    // latch block, and a bare `continue` would skip it, so such jumps are left to
+    // the if/else structuring instead. `exit` (break) is always safe.
+    struct LoopCtx { uint32_t continueTarget; uint32_t exit; };
+
     const CFGData& cfg_;
     std::vector<ExceptionHandlerInfo> handlers_;
     const DecompileContext& ctx_;
     const SrcLookup& src_;
     std::vector<bool> visited_;
+    std::vector<LoopCtx> loopStack_;
+    int depth_ = 0;  // emitRange recursion depth, for the nesting-limit safety net
 };
 
 } // namespace

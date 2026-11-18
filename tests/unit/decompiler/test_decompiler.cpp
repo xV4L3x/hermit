@@ -32,6 +32,7 @@ static constexpr const char* ARRAY_OBJECT_LITERALS_HBC = HBC_CORPUS_DIR "/array_
 static constexpr const char* ARRAY_OBJECT_LITERALS_LONG_HBC =
     HBC_CORPUS_DIR "/array_object_literals_long.hbc";
 static constexpr const char* SHOW_SOURCE_HBC = HBC_CORPUS_DIR "/show_source.hbc";
+static constexpr const char* LOOPS_HBC = HBC_CORPUS_DIR "/loops.hbc";
 
 static const hbc::FunctionInfo& findFunc(const hbc::HBCFile& hbc, const std::string& name) {
     for (const auto& f : hbc.functions())
@@ -74,6 +75,60 @@ TEST_CASE("decompile: rebuilds a loop (sumTo)", "[decompiler]") {
     std::string code = hbc.decompile(fn.index);
     bool hasLoop = contains(code, "while (") || contains(code, "while(");
     CHECK(hasLoop);
+}
+
+// ===========================================================================
+// Natural-loop structurer: while / do-while / for, test on top or at the
+// latch, with break / continue and nesting (loops.hbc). The register numbers
+// vary, so the tests check structural invariants, never exact text.
+// ===========================================================================
+
+TEST_CASE("decompile: bottom-test loop becomes do-while (sumDoWhile)", "[decompiler]") {
+    auto hbc = hbc::HBCFile::open(LOOPS_HBC);
+    std::string code = hbc.decompile(findFunc(hbc, "sumDoWhile").index);
+    CHECK(contains(code, "do {"));
+    CHECK(contains(code, "} while ("));
+    CHECK_FALSE(contains(code, "// unstructured region"));
+    CHECK_FALSE(contains(code, "/* Jmp"));
+}
+
+TEST_CASE("decompile: a for with continue stays structured (sumOdd)", "[decompiler]") {
+    auto hbc = hbc::HBCFile::open(LOOPS_HBC);
+    std::string code = hbc.decompile(findFunc(hbc, "sumOdd").index);
+    CHECK((contains(code, "while (") || contains(code, "do {")));
+    CHECK_FALSE(contains(code, "// unstructured region"));
+    CHECK_FALSE(contains(code, "/* Jmp"));
+}
+
+TEST_CASE("decompile: a loop with an early exit emits continue (findIndex)", "[decompiler]") {
+    auto hbc = hbc::HBCFile::open(LOOPS_HBC);
+    std::string code = hbc.decompile(findFunc(hbc, "findIndex").index);
+    CHECK(contains(code, "while ("));
+    CHECK(contains(code, "continue;"));
+    CHECK_FALSE(contains(code, "// unstructured region"));
+    CHECK_FALSE(contains(code, "/* Jmp"));
+}
+
+TEST_CASE("decompile: nested loops both structure (nestedMul)", "[decompiler]") {
+    auto hbc = hbc::HBCFile::open(LOOPS_HBC);
+    std::string code = hbc.decompile(findFunc(hbc, "nestedMul").index);
+    // two loop constructs (outer + inner), each a while/do.
+    size_t loops = 0;
+    for (size_t p = code.find("while ("); p != std::string::npos; p = code.find("while (", p + 1))
+        loops++;
+    CHECK(loops >= 2);
+    CHECK_FALSE(contains(code, "// unstructured region"));
+    CHECK_FALSE(contains(code, "/* Jmp"));
+}
+
+TEST_CASE("decompile: no raw jumps or unstructured regions in any loop sample", "[decompiler]") {
+    auto hbc = hbc::HBCFile::open(LOOPS_HBC);
+    for (const auto& f : hbc.functions()) {
+        std::string code = hbc.decompile(f.index);
+        INFO("function: " << f.name);
+        CHECK_FALSE(contains(code, "// unstructured region"));
+        CHECK_FALSE(contains(code, "/* Jmp"));
+    }
 }
 
 TEST_CASE("decompile: rebuilds try/catch (safeDivide)", "[decompiler]") {
