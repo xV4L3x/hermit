@@ -173,6 +173,155 @@ def cfg_to_dot(cfg, func, *, compact: bool = False) -> str:
     return "\n".join(lines)
 
 
+# ── Self-loop arrowhead fix ──────────────────────────────────────────────────
+# graph-easy draws a self-loop (a block with a back-edge to itself) with the
+# arrowhead at the BOTTOM of the block and the tail on top. For a CFG back-edge
+# that is backwards: the arrowhead belongs at the loop header, i.e. the top.
+# graph-easy offers no knob for this (`dir=back` is a no-op on a self-loop, ports
+# are unsupported, `dir=both` double-heads), so we swap the arrowhead to the top
+# of the bracket in its boxart output. Only blocks the CFG marks as self-looping
+# are touched, and only when the bracket is located with confidence (both of its
+# corners inside the block's box); otherwise the output is left unchanged, so
+# there is no regression. Cross-block back-edges are normal edges and already
+# point at their target, so they are not touched.
+#
+# This whole section is a graph-easy workaround; it is removed when B49 (a
+# pure-Python renderer with instruction-precise edge ports) replaces graph-easy.
+
+_VBAR = "│"                                   # │
+_TOP_L, _BOT_L = "┌╭", "└╰"    # ┌╭ , └╰  (left-side bracket)
+_TOP_R, _BOT_R = "┐╮", "┘╯"    # ┐╮ , ┘╯  (right-side bracket)
+_ARROW_L, _ARROW_R = "▶", "◀"            # ▶ (points right, into box) , ◀
+_HDASH = "─"                                  # ─
+# characters the bracket is allowed to overwrite (its own glyphs + blanks)
+_BRACKET_CHARS = set(" ─│┌└┐┘╭╮╰╯▶◀")
+
+
+def _self_loop_ids(cfg) -> set:
+    return {bb.id for bb in cfg.blocks for e in bb.successors
+            if e.kind == EdgeKind.BackEdge and e.target_id == bb.id}
+
+
+def _grid_char(lines: list, i: int, c: int) -> str:
+    return lines[i][c] if 0 <= i < len(lines) and 0 <= c < len(lines[i]) else " "
+
+
+def _box_rows(lines: list, r0: int, border_col: int) -> tuple:
+    """Top and bottom row of the box whose side border sits at `border_col`."""
+    top = r0
+    while top - 1 >= 0 and _grid_char(lines, top - 1, border_col) in "│╭┌╮┐":
+        top -= 1
+        if _grid_char(lines, top, border_col) in "╭┌╮┐":
+            break
+    bot = r0
+    while bot + 1 < len(lines) and _grid_char(lines, bot + 1, border_col) in "│╰└╯┘":
+        bot += 1
+        if _grid_char(lines, bot, border_col) in "╰└╯┘":
+            break
+    return top, bot
+
+
+def _flip_block_self_loop(lines: list, bid: int, start_off: int) -> None:
+    hdr = re.compile(rf"(?<![0-9A-Za-z])B{bid}(?![0-9A-Za-z])")
+    r0 = col = None
+    for i, row in enumerate(lines):
+        m = hdr.search("".join(row))
+        if m and _VBAR in row:
+            r0, col = i, m.start()
+            break
+    if r0 is None:
+        return
+    bars = [j for j, ch in enumerate(lines[r0]) if ch == _VBAR]
+    left = [b for b in bars if b < col]
+    right = [b for b in bars if b > col]
+    if not left or not right:
+        return
+    lb, rb = max(left), min(right)
+    top, bot = _box_rows(lines, r0, lb)
+    entry_tag = f"0x{start_off:04x}"
+
+    # Try a bracket on the left margin, then the right margin.
+    for arrow, top_c, bot_c, cols in (
+        (_ARROW_L, _TOP_L, _BOT_L, range(lb - 1, max(-1, lb - 10), -1)),
+        (_ARROW_R, _TOP_R, _BOT_R, range(rb + 1, rb + 10)),
+    ):
+        # 1) find the arrowhead inside the block's rows
+        ar = ac = None
+        for i in range(top, bot + 1):
+            for c in cols:
+                if _grid_char(lines, i, c) == arrow:
+                    ar, ac = i, c
+                    break
+            if ar is not None:
+                break
+        if ar is None:
+            continue
+        # 2) the corner on the arrowhead's row, then its matching corner up/down
+        cc = next((c for c in cols if _grid_char(lines, ar, c) in top_c + bot_c), None)
+        if cc is None:
+            continue
+        step = -1 if _grid_char(lines, ar, cc) in bot_c else 1
+        i = ar + step
+        while 0 <= i < len(lines) and _grid_char(lines, i, cc) == _VBAR:
+            i += step
+        if not (0 <= i < len(lines) and _grid_char(lines, i, cc) in top_c + bot_c):
+            continue
+        other = i
+        # 3) both corners inside the box => a genuine self-loop (not an edge
+        #    arriving from another block, whose far corner is outside the box)
+        if not (top <= other <= bot):
+            continue
+        tr, br = min(ar, other), max(ar, other)
+
+        # 4) the arrowhead belongs at the jump target = the block's entry
+        #    instruction (start_off). Use that row when it is at/above the
+        #    bracket top with a clear span to it; else fall back to the top.
+        lo, hi = min(ac, cc), max(ac, cc)
+        target = tr
+        er = next((r for r in range(top, bot + 1)
+                   if entry_tag in "".join(lines[r])), None)
+        if er is not None and er < tr and all(
+            _grid_char(lines, r, c) in _BRACKET_CHARS
+            for r in range(er, tr) for c in range(lo, hi + 1)
+        ):
+            target = er
+        if not all(_grid_char(lines, r, c) in _BRACKET_CHARS
+                   for r in range(target, br + 1) for c in range(lo, hi + 1)):
+            continue   # unexpected content in the bracket span: leave untouched
+
+        # 5) redraw: corner + arrowhead at `target`, vertical run down to `br`,
+        #    plain corner (no arrowhead) at the bottom.
+        top_corner, bot_corner = top_c[0], bot_c[0]
+        for r in range(target, br + 1):
+            if len(lines[r]) < hi + 1:   # right-margin rows can be shorter
+                lines[r].extend(" " * (hi + 1 - len(lines[r])))
+            for c in range(lo, hi + 1):
+                if r == target:
+                    lines[r][c] = top_corner if c == cc else (arrow if c == ac else _HDASH)
+                elif r == br:
+                    lines[r][c] = bot_corner if c == cc else _HDASH
+                else:
+                    lines[r][c] = _VBAR if c == cc else " "
+        return
+
+
+def _flip_self_loop_arrows(text: str, cfg) -> str:
+    """Rewrite graph-easy boxart so a self-loop arrowhead points at the block's
+    entry (the jump target / loop header) instead of the latch at the bottom.
+    A no-op when there are no self-loops or a bracket cannot be located."""
+    ids = _self_loop_ids(cfg)
+    if not ids:
+        return text
+    starts = {bb.id: bb.start_offset for bb in cfg.blocks}
+    lines = [list(l) for l in text.split("\n")]
+    for bid in ids:
+        try:
+            _flip_block_self_loop(lines, bid, starts[bid])
+        except Exception:
+            pass   # never let a rendering tweak break the output
+    return "\n".join("".join(r) for r in lines)
+
+
 # ── Rendering via graph-easy ─────────────────────────────────────────────────
 
 def _find_graph_easy() -> tuple[str, dict] | None:
@@ -232,7 +381,8 @@ def render_cfg(cfg, func, *, force_compact: bool | None = None) -> str:
         if result.returncode != 0 or not result.stdout.strip():
             err = result.stderr.strip()
             return f"{compact_note}\x1b[31m[graph-easy error]\x1b[0m {err}\n\n{dot}"
-        return compact_note + _colorize(result.stdout)
+        fixed = _flip_self_loop_arrows(result.stdout, cfg)
+        return compact_note + _colorize(fixed)
     except subprocess.TimeoutExpired:
         return f"{compact_note}\x1b[31m[graph-easy timed out]\x1b[0m\n\n{dot}"
     except Exception as exc:

@@ -109,3 +109,15 @@ Status legend: **[done]** shipped · **[wip]** partially implemented · **[plann
 - **[planned]** `B47` hosted, GPG-signed apt repository (reprepro on GitHub Pages)
   for `apt update && apt install hermit` with automatic upgrades, instead of the
   per-release `.deb` download.
+- **[planned]** `B49` pure-Python CFG/graph renderer to replace the external
+  `graph-easy` (Perl) dependency. Lay the graph out with a Sugiyama engine (e.g.
+  `grandalf`) or our own layered layout and draw the boxart ourselves, so every
+  edge attaches at the target block's **entry** instruction and leaves from the
+  source's branch (instruction-precise endpoints — `graph-easy` routes to nodes,
+  not offsets, so arrowheads land on the wrong instruction row), self-loops and
+  nested back-edges render correctly, and the Perl runtime dependency
+  (`cpanm Graph::Easy`) is dropped. Enables in-REPL CFG navigation on top (see
+  `cli/viewer.py`). **When this lands,
+  delete the `graph-easy` workaround in `cli/cfg_dot.py` (`_flip_self_loop_arrows`
+  and its helpers, `cfg_to_dot` if DOT export is not a standalone feature, and the
+  `graph-easy` subprocess plumbing) — no dead code.**

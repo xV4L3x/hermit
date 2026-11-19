@@ -29,6 +29,36 @@ def test_render_cfg_raises_without_graph_easy(monkeypatch):
         cfg_dot.render_cfg(cfg, func)
 
 
+_ANSI = __import__("re").compile(r"\x1b\[[0-9;]*m")
+
+
+def test_self_loop_arrowhead_points_to_entry():
+    """loops.hbc / countWhile (func 1): the block is its own loop (a self back-
+    edge). graph-easy draws the arrowhead on the latch (the branch, last
+    instruction); _flip_self_loop_arrows moves it to the jump target, i.e. the
+    block entry 0x0010 (= 0x001a + (-10)). Guard: the arrowhead is on the entry
+    row and not on the branch row."""
+    if cfg_dot._find_graph_easy() is None:
+        pytest.skip("graph-easy not installed")
+    cfg, func = _cfg_and_func("loops.hbc", 1)
+    plain = _ANSI.sub("", cfg_dot.render_cfg(cfg, func))
+    lines = plain.split("\n")
+    entry = next(l for l in lines if "0x0010" in l)       # Add: entry = jump target
+    branch = next(l for l in lines if "0x001a" in l)      # JGreater: the latch
+    assert "▶" in entry                              # arrowhead at the target
+    assert "▶" not in branch and "◀" not in branch
+
+
+def test_flip_self_loop_arrows_noop_without_self_loops():
+    """firstEven (func 3) has only a cross-block back-edge (latch != header):
+    graph-easy already points it at the header, so the fix must leave the
+    boxart untouched."""
+    cfg, func = _cfg_and_func("loops.hbc", 3)
+    assert not cfg_dot._self_loop_ids(cfg)
+    sample = "untouched boxart\n"
+    assert cfg_dot._flip_self_loop_arrows(sample, cfg) == sample
+
+
 def test_generator_resume_edges_in_dot():
     """env_chain_g.hbc: the generator body's SaveGenerator blocks get a dotted
     `resume` edge to their resume point."""
