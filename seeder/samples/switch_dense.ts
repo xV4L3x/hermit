@@ -19,4 +19,46 @@ function classify(i: number) {
         default: return "other";
     }
 }
-console.log(classify(7));
+
+// Second dense switch (10 cases 0..9, also lowered to SwitchImm) exercising the
+// shapes `classify` lacks: grouped labels (0 and 1 share a body), JS
+// fall-through (case 2 has no break and flows into 3), an empty case (5), a
+// default with a body, and a join block after the switch (`return r`).
+function route(i: number): number {
+    let r = 0;
+    switch (i) {
+        case 0:
+        case 1:
+            r = 10;
+            break;
+        case 2:
+            r = 20;
+            // fall-through
+        case 3:
+            r = r + 5;
+            break;
+        case 4:
+            r = 40;
+            break;
+        case 5:
+            break;
+        case 6:
+            r = 60;
+            break;
+        case 7:
+            r = 70;
+            break;
+        case 8:
+            r = 80;
+            break;
+        case 9:
+            r = 90;
+            break;
+        default:
+            r = -1;
+            break;
+    }
+    return r;
+}
+
+console.log(classify(7), route(2));

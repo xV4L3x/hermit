@@ -33,6 +33,7 @@ static constexpr const char* ARRAY_OBJECT_LITERALS_LONG_HBC =
     HBC_CORPUS_DIR "/array_object_literals_long.hbc";
 static constexpr const char* SHOW_SOURCE_HBC = HBC_CORPUS_DIR "/show_source.hbc";
 static constexpr const char* LOOPS_HBC = HBC_CORPUS_DIR "/loops.hbc";
+static constexpr const char* SWITCH_DENSE_HBC = HBC_CORPUS_DIR "/switch_dense.hbc";
 
 static const hbc::FunctionInfo& findFunc(const hbc::HBCFile& hbc, const std::string& name) {
     for (const auto& f : hbc.functions())
@@ -128,6 +129,50 @@ TEST_CASE("decompile: no raw jumps or unstructured regions in any loop sample", 
         INFO("function: " << f.name);
         CHECK_FALSE(contains(code, "// unstructured region"));
         CHECK_FALSE(contains(code, "/* Jmp"));
+    }
+}
+
+// ===========================================================================
+// Structured switch from SwitchImm (switch_dense.hbc). Dense integer switches
+// (>=10 contiguous cases) are the only shape Hermes lowers to a jump table;
+// sparse ones become JStrictEqual if-chains and go through the if/else path.
+// ===========================================================================
+
+TEST_CASE("decompile: dense switch with returning cases rebuilds switch (classify)", "[decompiler]") {
+    auto hbc = hbc::HBCFile::open(SWITCH_DENSE_HBC);
+    std::string code = hbc.decompile(findFunc(hbc, "classify").index);
+    CHECK(contains(code, "switch ("));
+    CHECK(contains(code, "case 0:"));
+    CHECK(contains(code, "case 11:"));
+    CHECK(contains(code, "default:"));
+    CHECK_FALSE(contains(code, "// unstructured region"));
+    CHECK_FALSE(contains(code, "/* Jmp"));
+    CHECK_FALSE(contains(code, "/* SwitchImm"));
+}
+
+TEST_CASE("decompile: dense switch with break, fall-through and default body (route)", "[decompiler]") {
+    auto hbc = hbc::HBCFile::open(SWITCH_DENSE_HBC);
+    std::string code = hbc.decompile(findFunc(hbc, "route").index);
+    CHECK(contains(code, "switch ("));
+    // grouped labels (case 0 and case 1 share a body)
+    CHECK(contains(code, "case 0:"));
+    CHECK(contains(code, "case 1:"));
+    CHECK(contains(code, "case 9:"));
+    CHECK(contains(code, "default:"));
+    CHECK(contains(code, "break;"));
+    CHECK_FALSE(contains(code, "// unstructured region"));
+    CHECK_FALSE(contains(code, "/* Jmp"));
+    CHECK_FALSE(contains(code, "/* SwitchImm"));
+}
+
+TEST_CASE("decompile: no raw jumps or unstructured regions in any switch sample", "[decompiler]") {
+    auto hbc = hbc::HBCFile::open(SWITCH_DENSE_HBC);
+    for (const auto& f : hbc.functions()) {
+        std::string code = hbc.decompile(f.index);
+        INFO("function: " << f.name);
+        CHECK_FALSE(contains(code, "// unstructured region"));
+        CHECK_FALSE(contains(code, "/* Jmp"));
+        CHECK_FALSE(contains(code, "/* SwitchImm"));
     }
 }
 

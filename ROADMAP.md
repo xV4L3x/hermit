@@ -52,7 +52,17 @@ Status legend: **[done]** shipped · **[wip]** partially implemented · **[plann
   `/* Jmp* */`. Complementary to `B23`, which adds the `for (x in/of y)` sugar on
   top of this skeleton. Remaining: labeled, multi-level `break`/`continue` to
   outer loops.
-- **[planned]** `B21` reconstruct structured `switch` from `SwitchImm` (currently a flat dump).
+- **[done]** `B21` reconstruct structured `switch` from `SwitchImm`:
+  `switch (d) { case K: ...; default: ... }` from the jump table, with grouped
+  labels, JS fall-through, empty cases (`case K: break;`), a `default` body, and
+  `break` to the follow block — or no follow block when every case returns.
+  Dense integer switches (Hermes' `LowerSwitchIntoJumpTables`, ≥10 contiguous
+  cases) are the only `SwitchImm` shape; sparse switches are `JStrictEqual`
+  chains handled by the `if/else` path. Remaining: multi-level/labeled `break`
+  from inside a switch to an enclosing loop (shared with the `B48` deferral);
+  v98 `UIntSwitchImm`/`StringSwitchImm` (no `JumpKind::Switch` yet, so they stay
+  unstructured); and the discriminant as a full expression rather than a register
+  name (`B40`).
 - **[planned]** `B23` iteration protocol for generators and `for-in`/`for-of`
   (CFG resume edges exist; the decompiler is still resume-free).
 - **[planned]** `B24` reconstruct computed-key getter/setter pairs

@@ -774,6 +774,28 @@ public:
                 }
             }
 
+            // break: a block inside a switch whose terminator jumps to the
+            // switch's join (the block after the switch) becomes `break;`.
+            // Distinct from the loop arm above: a loop exit and a switch join
+            // are different blocks, so at most one arm matches a given jump.
+            if (!switchStack_.empty() && !bb.instructions.empty() &&
+                isBranchMnemonic(bb.instructions.back().mnemonic)) {
+                const uint32_t joinB = switchStack_.back();
+                const Instruction& last = bb.instructions.back();
+                const uint32_t jt = jumpTargetBlock(cfg_, bb);
+                if (jt != NO_BLOCK && jt == joinB) {
+                    out += emitBlock(bb, indent, /*skipLastIfBranch=*/true);
+                    if (last.operands.size() >= 2) {  // conditional: if (cond) break;
+                        out += ind + "if (" + conditionText(last, ctx_) + ") break;\n";
+                        cur = findBlockAtOffset(cfg_, bb.endOffset);  // fall-through side
+                    } else {                          // unconditional
+                        out += ind + "break;\n";
+                        cur = NO_BLOCK;
+                    }
+                    continue;
+                }
+            }
+
             // Terminal block (Ret/Throw). A block inside a try always has an
             // ExceptionHandler edge, which isn't a continuation of normal flow.
             const bool hasRealSuccessor = std::any_of(bb.successors.begin(), bb.successors.end(),
@@ -807,6 +829,21 @@ public:
                 out += emitBlock(bb, indent, true);
                 cur = bb.successors[0].targetId;
                 continue;
+            }
+
+            // switch: reconstruct a structured switch from a SwitchImm jump
+            // table. Falls through to the raw dump below when the shape can't be
+            // resolved (empty table, unresolvable target, etc.), so no regression.
+            if (!bb.instructions.empty() &&
+                bb.instructions.back().mnemonic == "SwitchImm" &&
+                !bb.instructions.back().switchTargets.empty()) {
+                std::string swOut;
+                uint32_t swNext = NO_BLOCK;
+                if (emitSwitch(cur, indent, swOut, swNext)) {
+                    out += swOut;
+                    cur = swNext;
+                    continue;
+                }
             }
 
             // Switch or irregular CFG: raw dump, no recursion. Blocks reached
@@ -915,6 +952,141 @@ private:
         return false;
     }
 
+    // Reconstructs `switch (disc) { case K: ...; default: ... }` from a SwitchImm
+    // jump table (header already marked visited). `next` receives the block after
+    // the switch (its join), or NO_BLOCK when every case is terminal (all
+    // return/throw, so there is nothing after). Returns false (out untouched) for
+    // anything it can't resolve, so the caller falls back to the raw dump with no
+    // regression. The discriminant is shown as its register name; there is no
+    // value/expression reconstruction for it yet (see B40).
+    bool emitSwitch(uint32_t headId, int indent, std::string& out, uint32_t& next) {
+        const BasicBlock& head = cfg_.blocks[headId];
+        if (head.instructions.empty()) return false;
+        const Instruction& sw = head.instructions.back();
+        if (sw.mnemonic != "SwitchImm" || sw.switchTargets.empty() || sw.operands.size() < 5)
+            return false;
+
+        uint32_t defaultId = NO_BLOCK;
+        for (const auto& e : head.successors)
+            if (e.kind == EdgeKind::SwitchDefault) { defaultId = e.targetId; break; }
+        if (defaultId == NO_BLOCK) return false;
+
+        const uint32_t minVal = sw.operands[3].u32;
+
+        // Distinct case bodies in first-appearance order, each with its case
+        // values. switchTargets[i] is the target for value minVal + i (dense
+        // table); entries that point at the default block are range holes (the
+        // value has no real case) and are dropped.
+        std::vector<uint32_t> bodyOrder;
+        std::vector<std::vector<uint32_t>> bodyValues;
+        auto bodyIndex = [&](uint32_t id) -> int {
+            for (size_t k = 0; k < bodyOrder.size(); k++)
+                if (bodyOrder[k] == id) return static_cast<int>(k);
+            return -1;
+        };
+        for (size_t i = 0; i < sw.switchTargets.size(); i++) {
+            const uint32_t bodyId = findBlockAtOffset(cfg_, sw.switchTargets[i]);
+            if (bodyId == NO_BLOCK) return false;  // corrupt / truncated table
+            if (bodyId == defaultId) continue;     // hole -> default
+            const uint32_t value = minVal + static_cast<uint32_t>(i);
+            const int bi = bodyIndex(bodyId);
+            if (bi < 0) { bodyOrder.push_back(bodyId); bodyValues.push_back({value}); }
+            else bodyValues[static_cast<size_t>(bi)].push_back(value);
+        }
+        if (bodyOrder.empty()) return false;  // nothing but holes
+
+        // Follow block (after the switch): the block the most case/default
+        // bodies reconverge at via forward edges (at least two of them). NO_BLOCK
+        // when every case is terminal (all return/throw) - a valid switch with
+        // nothing after. The join can itself be a direct case target (an empty
+        // `case K: break;` that Hermes points straight at the follow block), so
+        // it is found by reconvergence, not excluded as a "body".
+        std::vector<uint32_t> allBodies = bodyOrder;
+        allBodies.push_back(defaultId);
+        const uint32_t nblk = static_cast<uint32_t>(cfg_.blocks.size());
+        std::vector<uint32_t> reachCount(nblk, 0);
+        for (uint32_t body : allBodies) {
+            std::vector<bool> seen(nblk, false);
+            std::vector<uint32_t> stack{body};
+            seen[body] = true;
+            while (!stack.empty()) {
+                const uint32_t id = stack.back(); stack.pop_back();
+                for (const auto& e : cfg_.blocks[id].successors) {
+                    if (e.kind == EdgeKind::BackEdge || e.kind == EdgeKind::ExceptionHandler) continue;
+                    if (!seen[e.targetId]) { seen[e.targetId] = true; stack.push_back(e.targetId); }
+                }
+            }
+            for (uint32_t b = 0; b < nblk; b++)
+                if (seen[b] && b != body) reachCount[b]++;
+        }
+        uint32_t joinId = NO_BLOCK;
+        for (uint32_t b = 0; b < nblk; b++) {
+            if (reachCount[b] < 2) continue;
+            if (joinId == NO_BLOCK || reachCount[b] > reachCount[joinId] ||
+                (reachCount[b] == reachCount[joinId] &&
+                 cfg_.blocks[b].startOffset < cfg_.blocks[joinId].startOffset))
+                joinId = b;
+        }
+
+        // A case whose target IS the join is an empty case (`case K: break;`):
+        // split those values out so the join block is not emitted as a body.
+        std::vector<uint32_t> emptyValues;
+        if (joinId != NO_BLOCK) {
+            const int ji = bodyIndex(joinId);
+            if (ji >= 0) {
+                emptyValues = bodyValues[static_cast<size_t>(ji)];
+                bodyOrder.erase(bodyOrder.begin() + ji);
+                bodyValues.erase(bodyValues.begin() + ji);
+            }
+        }
+
+        // Emit order: case bodies plus the default body (when it has one, i.e.
+        // the default is not just the join), sorted by start offset = bytecode
+        // order (which preserves JS fall-through between adjacent cases).
+        std::vector<uint32_t> emitOrder = bodyOrder;
+        const bool defaultHasBody = (defaultId != joinId);
+        if (defaultHasBody && bodyIndex(defaultId) < 0) emitOrder.push_back(defaultId);
+        std::sort(emitOrder.begin(), emitOrder.end(), [&](uint32_t x, uint32_t y) {
+            return cfg_.blocks[x].startOffset < cfg_.blocks[y].startOffset;
+        });
+
+        const std::string ind = indentStr(indent);
+        const std::string lind = indentStr(indent + 1);
+        const std::string disc = regName(ctx_, sw.operands[0].u32);
+
+        // Statements before the dispatch (discriminant setup, etc.); the trailing
+        // SwitchImm is dropped by emitBlock.
+        out += emitBlock(head, indent, /*skipLastIfBranch=*/false);
+        out += ind + "switch (" + disc + ") {\n";
+
+        switchStack_.push_back(joinId);
+        // Empty cases (`case K: break;`) first: they exit immediately, so there
+        // is no fall-through into the real bodies that follow.
+        for (uint32_t v : emptyValues)
+            out += lind + "case " + std::to_string(v) + ":\n";
+        if (!emptyValues.empty())
+            out += indentStr(indent + 2) + "break;\n";
+        for (size_t k = 0; k < emitOrder.size(); k++) {
+            const uint32_t bodyId = emitOrder[k];
+            if (bodyId == defaultId) {
+                out += lind + "default:\n";
+            } else {
+                for (uint32_t v : bodyValues[static_cast<size_t>(bodyIndex(bodyId))])
+                    out += lind + "case " + std::to_string(v) + ":\n";
+            }
+            // Confine the body to the next case boundary (or the join for the
+            // last one): a case with no `break` flows into the next body, and
+            // recursion stops at that boundary - implicit JS fall-through.
+            const uint32_t stopB = (k + 1 < emitOrder.size()) ? emitOrder[k + 1] : joinId;
+            out += emitRange(bodyId, stopB, indent + 2);
+        }
+        switchStack_.pop_back();
+
+        out += ind + "}\n";
+        next = joinId;
+        return true;
+    }
+
     // Index of the handler whose try range starts inside `bb` (by containment,
     // see mergeHandlersByTarget), or -1.
     int findOpeningHandler(const BasicBlock& bb) const {
@@ -997,6 +1169,7 @@ private:
     const SrcLookup& src_;
     std::vector<bool> visited_;
     std::vector<LoopCtx> loopStack_;
+    std::vector<uint32_t> switchStack_;  // innermost-first switch join blocks (break target)
     int depth_ = 0;  // emitRange recursion depth, for the nesting-limit safety net
 };
 
