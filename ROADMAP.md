@@ -125,6 +125,27 @@ Status legend: **[done]** shipped · **[wip]** partially implemented · **[plann
 - **[planned]** `B35` dedicated inter-procedural call-graph export (graphviz/DOT).
 - **[planned]** `B31` secrets scanner: auto-detect API keys/tokens in bytecode.
 - **[planned]** `B33` diff between two bundles (compare two app versions).
+- **[planned]** `B52` taint-analysis (source→sink) engine for security review on
+  minified release bytecode — _design under study, scope may change._ A pure-Python
+  subpackage `hermit/analysis/taint/` built only on existing `_libhbc` primitives
+  (so it ships with `hermit-hbc`, needs no C++ rebuild, and is version-agnostic —
+  runs on any version the parser accepts, v99 included), with two surfaces over one
+  core: a Python API (`TaintEngine(hbc, cfg).run() -> list[TaintFlow]`) and a REPL
+  `taint` command (`cli/commands/taint.py`, `source:`/`sink:`/`func:` filters,
+  `--catalog`/`--min-confidence`/`--max-depth`, `--json|--sarif|--md` output).
+  Interprocedural, best-effort, confidence-ranked (not sound/complete): seed from a
+  catalog of sources, propagate intra-function via `value_flow` (following
+  `AbstractValue.base()`), across closures via `env_accesses`/`env_slot_uses`, and
+  across calls via the memoized caller index (`build_caller_index` +
+  `resolved_calls`), with a depth cap, sanitizer clearing, and a confidence score
+  that decays on unresolved calls / depth / dynamic names. Ships a default React
+  Native catalog (TOML: deeplink/WebView-`onMessage`/network/storage sources;
+  `eval`/`Function`, WebView nav, `NativeModules.*`, request-URL SSRF, SQL/file
+  sinks; `encodeURIComponent`/allowlist sanitizers), user-overridable by `id`.
+  Matching keys off resolved names (property/`require`/builtin names survive Hermes
+  minification) via `resolved_calls`/`textified_callees`/`Operand.resolved_string`.
+  Golden-flow fixtures compiled with the seeder (true/false positives); C++ side
+  untouched for the MVP, with a possible C++ fast path only if profiling demands it.
 
 ## Integration & tooling
 
