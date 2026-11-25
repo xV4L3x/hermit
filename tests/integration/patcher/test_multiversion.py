@@ -41,7 +41,7 @@ def _compiler(version):
 VERSIONS = [
     pytest.param(v, marks=pytest.mark.skipif(_compiler(v) is None,
                                              reason=f"no hermes for HBC {v}"))
-    for v in (94, 95, 96, 98)
+    for v in (94, 95, 96, 98, 99)
 ]
 
 

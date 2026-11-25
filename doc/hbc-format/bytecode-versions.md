@@ -26,11 +26,14 @@
 
 **97, 98, 99 are a trap.** They exist only on the **`static_h` branch** - Static Hermes, Meta's experimental ahead-of-time *JS->native* compiler - which happens to be the repo's **default branch** (this is exactly why earlier notes misread it). Static Hermes is **not** what React Native uses to produce the bytecode bundle in shipping apps for RN ≤ 0.83. But from RN 0.84 the default is **Hermes V1**, which is Static Hermes and emits **HBC 98**, so 98 *does* ship in new apps.
 
-> **Update: v98 is now supported.** hermit parses, round-trips and patches HBC 98
-> as a second wire format (12-byte function headers, object shape table,
-> renumbered opcodes), dispatched by a per-version `FormatVersion` module. The
-> delta from v96 is in [`v98-format.md`](v98-format.md). v97 and v99 are still
-> uncovered (v97 ships in no app; v99 is unreleased).
+> **Update: v98 and v99 are now supported.** hermit parses, round-trips and
+> patches HBC 98 and 99 as second/third wire formats (12-byte function headers,
+> object shape table, renumbered opcodes), each dispatched by a per-version
+> `FormatVersion` module. The delta from v96 is in
+> [`v98-format.md`](v98-format.md); v99 is a small delta over v98 (36-byte
+> overflow header, 220-opcode table) in [`v99-format.md`](v99-format.md). v99
+> ships in no React Native stable release by default, but real production bundles
+> already use it. v97 is still uncovered (it ships in no app).
 
 > **Correction history:** an earlier version of this file claimed `main` was 99 with 97/98 as recent mainline bumps and "98 = most current real apps." That was wrong - it read `BytecodeVersion.h` on the default branch (`static_h`) and assumed it was the HBC mainline. The cited bump commits are real but live on `static_h`. The whole project target was retargeted from 97/98/99 -> **96** (primary) + 94/95 (multi-version validation) as a result.
 
@@ -73,7 +76,7 @@ Confirmed by reading `BytecodeVersion.h` at each commit on `main` (use `?ref=<sh
 
 Older: 90 (`0763eee4`, 2022-10-07), 91, 92, 93 … down to 59 (initial release). Walk `git log --sha=main` on the file to extend.
 
-The 97/98/99 bumps (`16b5ada8`->97, `c00cc575`->98, `42235b8d`->99) are **on `static_h`**, not `main` - keep them only for the future-work chapter.
+The 97/98/99 bumps (`16b5ada8`->97, `c00cc575`->98, `42235b8d`->99) are **on `static_h`**, not `main`. v98 and v99 are supported (see [`v98-format.md`](v98-format.md) / [`v99-format.md`](v99-format.md)); v97 is uncovered. Note "version 98" and "version 99" are each a moving target on `static_h` (the wire format changed within the version without a bump): hermit targets the shipped v98 tag `hermes-v250829098.0.14` and, for v99, the `static_h` snapshot `c8dab081f`.
 
 ## React Native version -> HBC version (empirical, bundled `hermesc`)
 

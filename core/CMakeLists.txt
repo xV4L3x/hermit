@@ -13,9 +13,11 @@ add_library(hbc STATIC
     src/format/opcodes_v95.cpp
     src/format/opcodes_v96.cpp
     src/format/opcodes_v98.cpp
+    src/format/opcodes_v99.cpp
     src/format/format_version.cpp
     src/format/format_legacy.cpp
     src/format/format_v98.cpp
+    src/format/format_v99.cpp
     src/disasm/disasm.cpp
     src/cfg/cfg.cpp
     src/analysis/analysis.cpp

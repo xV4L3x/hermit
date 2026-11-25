@@ -40,6 +40,18 @@ Status legend: **[done]** shipped · **[wip]** partially implemented · **[plann
   0.84): parser, byte-identical round-trip and the structural patcher, dispatched
   through a per-version `FormatVersion` module. See
   [`doc/hbc-format/v98-format.md`](doc/hbc-format/v98-format.md).
+- **[done]** `B50` HBC v99 support (Static Hermes, `static_h`): a small delta over
+  v98 — a 36-byte overflow function header (`CacheNewObject` removed) and a
+  renumbered 220-opcode table (`+NewTypedObjectWithBuffer`, `+ToUint32`,
+  `-CacheNewObject`, `NewFastArray` arity 3). `FormatV99` subclasses `FormatV98`
+  and overrides only `largeHeaderSize()`. Parser, disasm, decompiler,
+  byte-identical round-trip and the full structural patcher validated on a real
+  production v99 bundle and on the v99 VM. See
+  [`doc/hbc-format/v99-format.md`](doc/hbc-format/v99-format.md).
+- **[planned]** `B51` recognise `NewTypedObjectWithBuffer` (v99) as an
+  object-literal producer, so the literal xref / resize paths resolve and edit its
+  typed-object literals. Currently skipped (emitted only by Static Hermes typed
+  classes, absent from the bundles observed).
 - **[planned]** `B34` dump of additional sections (object shapes, regexp, cjs-modules).
 - **[planned]** `B37` read legacy HBC versions (40–93).
 
@@ -60,11 +72,17 @@ Status legend: **[done]** shipped · **[wip]** partially implemented · **[plann
   cases) are the only `SwitchImm` shape; sparse switches are `JStrictEqual`
   chains handled by the `if/else` path. Remaining: multi-level/labeled `break`
   from inside a switch to an enclosing loop (shared with the `B48` deferral);
-  v98 `UIntSwitchImm`/`StringSwitchImm` (no `JumpKind::Switch` yet, so they stay
-  unstructured); and the discriminant as a full expression rather than a register
-  name (`B40`).
-- **[planned]** `B23` iteration protocol for generators and `for-in`/`for-of`
-  (CFG resume edges exist; the decompiler is still resume-free).
+  v98/v99 `UIntSwitchImm`/`StringSwitchImm` (no `JumpKind::Switch` yet, so they
+  stay unstructured); and the discriminant as a full expression rather than a
+  register name (`B40`).
+- **[wip]** `B23` generators and the iteration protocol. Done: generator bodies
+  reconstruct `function*` and `yield` from the `SaveGenerator`/`ResumeGenerator`
+  skeleton and the synthetic `GeneratorResume` edges, dropping the
+  `.return()/.throw()` completion scaffolding. Remaining: `for-in`/`for-of`
+  (consumer side — `IteratorBegin`/`IteratorNext`/`IteratorClose`,
+  `GetPNameList`/`GetNextPName`), `yield*` delegation, the sent-value binding
+  (`x = yield v`), and `async`/`await` sugar (async functions currently render
+  as `function*`/`yield`, their underlying mechanism).
 - **[planned]** `B24` reconstruct computed-key getter/setter pairs
   (`PutOwnGetterSetterByVal`).
 - **[planned]** `B25` recognise and suppress the `ThrowIfHasRestrictedGlobalProperty`

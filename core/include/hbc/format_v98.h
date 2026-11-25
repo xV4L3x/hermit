@@ -69,6 +69,10 @@ constexpr uint8_t kFuncKindAsync     = 2;
 // small header; parsed explicitly in format_v98.cpp).
 constexpr uint32_t kV98SmallFuncHeaderSize = 12;
 constexpr uint32_t kV98LargeFuncHeaderSize = 37;
+// v99 (Static Hermes): same 12-byte small header, but the overflow (large)
+// header is 36 bytes - NumCacheNewObject was removed before the v99 bump. See
+// format_v99.cpp.
+constexpr uint32_t kV99LargeFuncHeaderSize = 36;
 
 #pragma pack(push, 1)
 // New in v98: the object shape table (keys/count of object literals).

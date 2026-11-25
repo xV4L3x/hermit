@@ -98,8 +98,10 @@ static const HBCFileHeader* validateHeader(const void* data, size_t size) {
     std::memcpy(&ver, static_cast<const uint8_t*>(data) + 8, sizeof(ver));
     const HBCFileHeader* hdr;
     switch (ver) {
-        // v98's tail header words are shifted; the shared struct still reads the
-        // common fields (<= 0x58), and the format module reads the shifted ones.
+        // v98/v99's tail header words are shifted; the shared struct still reads
+        // the common fields (<= 0x58), and the format module reads the shifted
+        // ones. v99 has the same 128-byte header layout as v98.
+        case 99:
         case 98: hdr = reinterpret_cast<const HBCFileHeader*>(data); break;
         case 96: hdr = reinterpret_cast<const HBCFileHeader_v96*>(data); break;
         case 95: hdr = reinterpret_cast<const HBCFileHeader_v95*>(data); break;
